@@ -3,6 +3,7 @@ import { addonBuilder } from '@stremio-addon/compat';
 import { manifest } from './manifest.js';
 import {
   buildSearchQuery,
+  dedupeIgnoreCase,
   createStreamPath,
   createStreamUrl,
   getDuration,
@@ -11,6 +12,8 @@ import {
   getQuality,
   getSize,
   isBadVideo,
+  isAdultGroup,
+  isAnchoredQuery,
   logError,
   matchesTitle,
   getAlternativeTitles,
@@ -436,13 +439,29 @@ builder.defineStreamHandler(
         }
         return out;
       };
-      const noYearQueries = buildQueries(false);
-      const yearQueries = meta.year !== undefined ? buildQueries(true) : [];
+      // De-duplicate to avoid spending rate-limited API calls on identical
+      // searches. The no-year phase is deduped case-insensitively; the year
+      // phase additionally drops anything already covered by the no-year phase.
+      // For series this empties the year phase entirely (buildSearchQuery ignores
+      // the year for series, so it produces the same strings) — which previously
+      // re-fired the no-year queries when they failed, adding load during
+      // throttling. Also collapses case variants like "loegnen"/"Loegnen".
+      const noYearQueries = dedupeIgnoreCase(buildQueries(false));
+      const noYearKeys = new Set(noYearQueries.map(q => q.toLowerCase()));
+      const yearQueries =
+        meta.year !== undefined
+          ? dedupeIgnoreCase(buildQueries(true)).filter(q => !noYearKeys.has(q.toLowerCase()))
+          : [];
 
       // BOUNDED concurrency instead of one-at-a-time (the sequential fan-out was
       // the dominant latency cost on a cache miss). Clamp to >= 1 so a misconfig
       // (SEARCH_CONCURRENCY=0 or negative) can never stall the batch loop.
       const SEARCH_CONCURRENCY = Math.max(1, parseIntEnv(process.env.SEARCH_CONCURRENCY, 5));
+
+      // Count failed searches (e.g. Easynews timeouts) so an all-failure outcome
+      // isn't mistaken for a genuine "no results" and cached for the long
+      // empty-result TTL. See the empty-result branch below.
+      let searchErrors = 0;
 
       // Run one phase's queries in concurrency-bounded batches, merging results in
       // query order and re-checking the early-exit threshold between batches.
@@ -468,6 +487,7 @@ builder.defineStreamHandler(
 
             if (outcome.status === 'rejected') {
               if (isAuthError(outcome.reason)) throw outcome.reason;
+              searchErrors++;
               logger.error(`Error searching for "${query}":`, outcome.reason);
               continue;
             }
@@ -496,7 +516,20 @@ builder.defineStreamHandler(
       }
 
       if (allSearchResults.length === 0) {
-        // Expensive no-result path: the full search fan-out ran and returned
+        // If any search failed (e.g. an Easynews timeout storm), we cannot tell a
+        // genuine "no results" from a transient upstream outage. Treat it like
+        // the outer error handler: short protocol TTL and DELIBERATELY NOT
+        // written to the in-process cache, so recovery is visible within ~1 min
+        // instead of being stuck behind the 10-min empty-result TTL.
+        if (searchErrors > 0) {
+          logger.warn(
+            `All searches for ${id} returned no results, with ${searchErrors} failure(s) ` +
+              `(likely a transient upstream timeout). Not caching as empty.`
+          );
+          return { streams: [], cacheMaxAge: ERROR_CACHE_MAX_AGE };
+        }
+
+        // Genuinely empty: the full search fan-out ran successfully and returned
         // nothing. Cache it (in-process + protocol-level) so repeats don't redo
         // the whole fan-out — this was previously uncached entirely.
         const emptyResult = { streams: [], cacheMaxAge: EMPTY_RESULT_CACHE_MAX_AGE };
@@ -517,6 +550,7 @@ builder.defineStreamHandler(
       let rejectedSample = 0;
       let rejectedDuplicate = 0;
       let rejectedTitle = 0;
+      let rejectedAdult = 0;
 
       // Apply global limit across all search results
       logger.debug(`Global stream limit: ${TOTAL_MAX_RESULTS} results across all searches`);
@@ -546,6 +580,13 @@ builder.defineStreamHandler(
           // matching the previous short-circuit order, then the duplicate check.
           if (isBadVideo(file)) {
             rejectedSample++;
+            continue;
+          }
+          // Drop posts from adult/porn newsgroups. A generic-English title (e.g.
+          // a foreign show whose IMDb canonical is "Take Care") otherwise floods
+          // unanchored searches with porn cross-posted to erotica/xxx/sex groups.
+          if (isAdultGroup(String(file['9'] ?? ''))) {
+            rejectedAdult++;
             continue;
           }
           if (processedHashes.has(fileHash)) {
@@ -578,8 +619,12 @@ builder.defineStreamHandler(
               queries.push(buildSearchQuery(type, episodeMeta));
             }
 
-            // Use strictTitleMatching setting if enabled for series
-            if (!queries.some(q => matchesTitle(title, q, useStrictMatching))) {
+            // Honor the user's strict setting, but force strict on UNANCHORED
+            // queries (no SxxExx / no year): a bare generic-English title floods
+            // with porn that substring-matches under loose. See isAnchoredQuery.
+            if (
+              !queries.some(q => matchesTitle(title, q, useStrictMatching || !isAnchoredQuery(q)))
+            ) {
               logger.debug(`Rejected series by title matching: "${title}"`);
               rejectedTitle++;
               continue;
@@ -593,8 +638,13 @@ builder.defineStreamHandler(
               ...meta,
               name: titleVariant,
             });
-            // For movies, only use strictTitleMatching if enabled by user, just like for series
-            return matchesTitle(title, variantQuery, useStrictMatching);
+            // Honor the user's strict setting, but force strict on unanchored
+            // queries (no year here) for the same anti-flood reason as series.
+            return matchesTitle(
+              title,
+              variantQuery,
+              useStrictMatching || !isAnchoredQuery(variantQuery)
+            );
           });
 
           if (!matchesAnyVariant) {
@@ -866,6 +916,7 @@ builder.defineStreamHandler(
         // at a glance rather than inferred from many per-file rejection lines.
         const parts: string[] = [];
         if (rejectedSample) parts.push(`${rejectedSample} sample/too-short`);
+        if (rejectedAdult) parts.push(`${rejectedAdult} adult-newsgroup`);
         if (rejectedTitle) parts.push(`${rejectedTitle} title-mismatch`);
         if (rejectedDuplicate) parts.push(`${rejectedDuplicate} duplicate`);
         if (matchedBeforeFilters)
