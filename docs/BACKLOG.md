@@ -38,14 +38,14 @@ depth inflate the perceived scope.
 
 **Priorities:**
 
-- **P1 — ship now (small, high-confidence):** full B→T normalization on the `🌐`
-  line (fixes real dropped languages) + read `slangs` + emit the `💬` codes line
-  (immediate human value; PR-ready). **Verify end-to-end** against a live AIOStreams
-  Easynews++ preset instance before calling it done — the "safe to ship" analysis is
-  sound reasoning, not yet a real-instance test.
-- **P2 — one upstream PR (higher leverage, maintainer-paced):** alias fix
-  (+`slo→slv`) so B-codes work for _all_ external addons, plus the `💬`
-  `getSubtitles` override. Backward-compatible + symmetric. Don't block P1 on it.
+- **P1 — SHIPPED in v2.8.0:** full B→T normalization on the `🌐` line + read
+  `slangs` + emit the `💬` codes line. Verified live against a real AIOStreams
+  Easynews++ preset (German audio → `DE`) and in plain Stremio (`🌐 deu` + `💬 deu`).
+- **P2 — PR SUBMITTED (Viren070/AIOStreams#1133):** the `💬` `getParsedFile`
+  override so AIOStreams ingests our subtitle line (mirrors Torrentio; type-verified,
+  awaiting their CI/review). Scope note: the optional upstream B→T alias fix
+  (+`slo→slv`) was **not** bundled — we self-normalize to /T, so it isn't needed for
+  us; leave it as a separate courtesy report if ever pursued.
 - **P3 — deferred, evidence-gated:** v3 migration (item 3). Its concurrency benefit
   is **unmeasured**; V2-retirement risk is low; cost is a real normalization layer.
   Do **not** start until we measure an actual 2.0 concurrency bottleneck.
@@ -122,6 +122,16 @@ AIOStreams according to some reference template."
 via multiple independent traces). **The premise was wrong: there _is_ a template,
 it's for us specifically, and we already emit it — but with a code-format bug that
 silently drops German/French/Dutch/Chinese.** The fix is tiny and high-value.
+
+**Update (2026-07-24) — our side SHIPPED, upstream PR SUBMITTED:** the our-side
+work (full B→T normalization on the `🌐` line + the new `💬` subtitle line) shipped
+in **v2.8.0**. The upstream subtitle-ingestion side is submitted as **PR
+Viren070/AIOStreams#1133** — a `getParsedFile()` override on `EasynewsPlusPlusParser`
+mirroring Torrentio's pattern, type-verified against their tree (`pnpm -F core build`),
+awaiting their CI / maintainer review. Scope: that PR covers subtitle ingestion only;
+the optional upstream B→T alias fix (their `convertISO6392ToLanguage` strict match +
+`slo→slk` bug) was deliberately **not** bundled, since we self-normalize to /T and so
+don't depend on it. Fork clone for iterating on review: `~/projects/AIOStreams`.
 
 ### The "reference template" is real and Easynews++-specific
 
