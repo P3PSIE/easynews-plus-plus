@@ -60,7 +60,7 @@ export type FileData = {
   twidth: number;
   fullres: string;
   alangs: string[] | null;
-  slangs: null;
+  slangs: string[] | null;
   passwd: boolean;
   virus: boolean;
   expires: The20;

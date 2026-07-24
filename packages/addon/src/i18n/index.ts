@@ -147,6 +147,62 @@ export const ADDITIONAL_LANGUAGE_CODES: Record<string, string> = {
   vie: 'vi', // Vietnamese
 };
 
+// ISO 639-2/B (bibliographic) → ISO 639-2/T (terminological) normalization.
+//
+// Easynews returns audio/subtitle language codes as ISO 639-2/B (e.g. `ger`,
+// `fre`, `dut`, `chi`). Downstream consumers — notably AIOStreams'
+// `EasynewsPlusPlusParser`, which reads our `🌐`/`💬` description lines — look codes
+// up in a table keyed on ISO 639-2/T only, so a raw B-code silently resolves to
+// nothing and the language is dropped. Normalizing B→T before we emit the codes
+// fixes that for every divergent language.
+//
+// This is the complete set of languages where B differs from T. Codes not listed
+// here (e.g. `eng`, `spa`, `kor`, `dan`) are identical in both variants and pass
+// through unchanged. Note `slo` → `slv` (Slovenian) is the correct mapping; do not
+// copy AIOStreams' `slo → slk` (Slovak) bug.
+export const ISO6392B_TO_T: Record<string, string> = {
+  alb: 'sqi', // Albanian
+  arm: 'hye', // Armenian
+  baq: 'eus', // Basque
+  bur: 'mya', // Burmese
+  chi: 'zho', // Chinese
+  cze: 'ces', // Czech
+  dut: 'nld', // Dutch
+  fre: 'fra', // French
+  geo: 'kat', // Georgian
+  ger: 'deu', // German
+  gre: 'ell', // Greek (modern)
+  ice: 'isl', // Icelandic
+  mac: 'mkd', // Macedonian
+  mao: 'mri', // Maori
+  may: 'msa', // Malay
+  per: 'fas', // Persian
+  rum: 'ron', // Romanian
+  slo: 'slv', // Slovenian
+  tib: 'bod', // Tibetan
+  wel: 'cym', // Welsh
+};
+
+/**
+ * Normalize a list of ISO 639-2 language codes to their terminological (639-2/T)
+ * form for display/emission. Trims and lowercases each code, maps any
+ * bibliographic (B) code to its terminological (T) equivalent (pass-through when
+ * they don't diverge), drops empties, and de-duplicates while preserving order.
+ */
+export function normalizeLangCodes(codes: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of codes) {
+    const code = String(raw).trim().toLowerCase();
+    if (!code) continue;
+    const normalized = ISO6392B_TO_T[code] ?? code;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
 // Full display names for all supported languages (both UI and additional)
 export const LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
   // Core languages with UI translations
