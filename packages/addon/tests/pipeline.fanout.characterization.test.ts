@@ -26,7 +26,9 @@ vi.mock('../src/manifest', () => ({
 
 const mockSearch = vi.fn();
 
-vi.mock('easynews-plus-plus-api', () => ({
+vi.mock('easynews-plus-plus-api', async importOriginal => ({
+  // Spread the real module so non-mocked exports (createLimiter) stay live.
+  ...(await importOriginal<typeof import('easynews-plus-plus-api')>()),
   EasynewsAPI: vi.fn().mockImplementation(() => ({ search: mockSearch })),
 }));
 

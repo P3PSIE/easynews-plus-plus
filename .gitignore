@@ -40,3 +40,5 @@ wrangler.toml
 # Local agent/tooling state
 .memsearch/
 CLAUDE.md
+# Internal working documents (kept local, not part of the public repo)
+docs/BACKLOG.md
