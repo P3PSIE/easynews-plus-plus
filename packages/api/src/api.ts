@@ -19,6 +19,49 @@ export const logger = createLogger({
 const sharedCache = new Map<string, { data: EasynewsSearchResponse; timestamp: number }>();
 const MAX_CACHE_ENTRIES = parseIntEnv(process.env.MAX_CACHE_ENTRIES, 1000);
 
+// Easynews serves at most ~2 concurrent searches per account (live-measured
+// 2026-07-24: a controlled benchmark showed 2 simultaneous requests complete in
+// ~1s while 3+ trigger a ~16s server-side tarpit that scales with the excess —
+// past our 20s timeout at 5+. The cap is shared across API versions and across
+// clients of the same account). It is an ACCOUNT property, so it is enforced
+// here — shared across EasynewsAPI instances via a per-credential limiter —
+// rather than left to callers' batching discipline. EASYNEWS_ACCOUNT_CONCURRENCY
+// exists as an escape hatch should Easynews ever change the cap.
+type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
+
+function createLimiter(max: number): Limiter {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  // On completion the slot is handed directly to the next waiter (active is NOT
+  // decremented in between) — decrementing first would open a window where a
+  // new caller sneaks in and the woken waiter overshoots the cap.
+  const release = () => {
+    const next = queue.shift();
+    if (next) next();
+    else active--;
+  };
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= max) {
+      await new Promise<void>(resolve => queue.push(resolve));
+    } else {
+      active++;
+    }
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  };
+}
+
+const accountLimiters = new Map<string, Limiter>();
+
+// In-flight identical searches are coalesced onto one promise (the response
+// cache only dedupes COMPLETED searches, so without this two simultaneous
+// cache misses for the same query would spend two of the account's slots on
+// identical work). Keyed by the same credential-scoped cache key.
+const inflightSearches = new Map<string, Promise<EasynewsSearchResponse>>();
+
 // Small non-cryptographic fingerprint (FNV-1a) of the credentials, used only to
 // namespace cache entries per account. It is not security-sensitive and is never
 // logged in full; distinct accounts simply need to land on distinct keys.
@@ -53,6 +96,18 @@ export class EasynewsAPI {
   /** Clears the shared search cache (primarily for tests / operational reset). */
   static clearCache(): void {
     sharedCache.clear();
+    accountLimiters.clear();
+    inflightSearches.clear();
+  }
+
+  private getLimiter(): Limiter {
+    let limiter = accountLimiters.get(this.credKey);
+    if (!limiter) {
+      const max = Math.max(1, parseIntEnv(process.env.EASYNEWS_ACCOUNT_CONCURRENCY, 2));
+      limiter = createLimiter(max);
+      accountLimiters.set(this.credKey, limiter);
+    }
+    return limiter;
   }
 
   private getCacheKey(options: SearchOptions): string {
@@ -140,6 +195,51 @@ export class EasynewsAPI {
       return cachedResult;
     }
 
+    // Coalesce onto an identical in-flight search instead of spending a second
+    // account slot on the same work.
+    const pending = inflightSearches.get(cacheKey);
+    if (pending) {
+      logger.debug(`Joining in-flight search for key: ${cacheKey.substring(0, 50)}...`);
+      return pending;
+    }
+
+    const request = this.getLimiter()(() =>
+      this.doSearch(
+        {
+          query,
+          pageNr,
+          maxResults,
+          sort1,
+          sort1Direction,
+          sort2,
+          sort2Direction,
+          sort3,
+          sort3Direction,
+        },
+        cacheKey
+      )
+    ).finally(() => {
+      inflightSearches.delete(cacheKey);
+    });
+    inflightSearches.set(cacheKey, request);
+    return request;
+  }
+
+  /** Performs the actual HTTP search request. Callers must hold an account slot. */
+  private async doSearch(
+    {
+      query,
+      pageNr,
+      maxResults,
+      sort1,
+      sort1Direction,
+      sort2,
+      sort2Direction,
+      sort3,
+      sort3Direction,
+    }: Required<Omit<SearchOptions, 'query'>> & { query: string },
+    cacheKey: string
+  ): Promise<EasynewsSearchResponse> {
     const searchParams = {
       st: 'adv',
       sb: '1',
