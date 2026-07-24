@@ -21,7 +21,12 @@ import {
   isAuthError,
   MissingBaseUrlError,
 } from './utils.js';
-import { EasynewsAPI, SearchOptions, EasynewsSearchResponse } from 'easynews-plus-plus-api';
+import {
+  EasynewsAPI,
+  createLimiter,
+  SearchOptions,
+  EasynewsSearchResponse,
+} from 'easynews-plus-plus-api';
 import { publicMetaProvider } from './meta.js';
 import { Stream } from './types.js';
 import customTitlesJson from '../../../custom-titles.json' with { type: 'json' };
@@ -109,6 +114,13 @@ const MAX_CACHE_ENTRIES = Number(process.env.MAX_CACHE_ENTRIES) || 1000;
 // every single open (the most expensive requests were previously uncached).
 const EMPTY_RESULT_CACHE_MAX_AGE = 60 * 10; // 10 minutes
 const ERROR_CACHE_MAX_AGE = 60; // 1 minute
+
+// The Easynews per-account concurrency cap is enforced authoritatively by the
+// api package's account limiter (canonical writeup of the measured cap:
+// packages/api/src/api.ts). SEARCH_CONCURRENCY above that cap is merely
+// ineffective — the extra workers queue at the API limiter — so warn once,
+// without spamming every request.
+let warnedConcurrencyAboveCap = false;
 
 function getFromCache<T>(key: string): T | null {
   const cached = requestCache.get(key);
@@ -407,17 +419,10 @@ builder.defineStreamHandler(
       const TOTAL_MAX_RESULTS = parseIntEnv(process.env.TOTAL_MAX_RESULTS, 500);
       let totalFoundResults = 0;
 
-      // Helper function to count total unique results across all searches
-      const countTotalUniqueResults = () => {
-        const uniqueHashes = new Set<string>();
-        for (const { result } of allSearchResults) {
-          for (const file of result.data ?? []) {
-            const fileHash = file['0'];
-            uniqueHashes.add(fileHash);
-          }
-        }
-        return uniqueHashes.size;
-      };
+      // Running dedup of every file hash seen across all searches. Workers add
+      // hashes as each result lands, so totalFoundResults (= seenHashes.size)
+      // is maintained incrementally instead of being recomputed per completion.
+      const seenHashes = new Set<string>();
 
       // Build the query lists: every title variant WITHOUT the year, then (if the
       // year is known) every variant WITH the year. Kept as two phases so the
@@ -453,55 +458,91 @@ builder.defineStreamHandler(
           ? dedupeIgnoreCase(buildQueries(true)).filter(q => !noYearKeys.has(q.toLowerCase()))
           : [];
 
-      // BOUNDED concurrency instead of one-at-a-time (the sequential fan-out was
-      // the dominant latency cost on a cache miss). Clamp to >= 1 so a misconfig
-      // (SEARCH_CONCURRENCY=0 or negative) can never stall the batch loop.
-      const SEARCH_CONCURRENCY = Math.max(1, parseIntEnv(process.env.SEARCH_CONCURRENCY, 5));
+      // BOUNDED concurrency instead of one-at-a-time (the sequential fan-out
+      // was the dominant latency cost on a cache miss). Default 2 = Easynews'
+      // measured per-account cap, enforced authoritatively by the api
+      // package's account limiter (canonical writeup: packages/api/src/api.ts).
+      // Clamp to >= 1 so a misconfig (SEARCH_CONCURRENCY=0 or negative) can
+      // never stall the fan-out.
+      const SEARCH_CONCURRENCY = Math.max(1, parseIntEnv(process.env.SEARCH_CONCURRENCY, 2));
+      const ACCOUNT_CONCURRENCY = Math.max(
+        1,
+        parseIntEnv(process.env.EASYNEWS_ACCOUNT_CONCURRENCY, 2)
+      );
+      if (SEARCH_CONCURRENCY > ACCOUNT_CONCURRENCY && !warnedConcurrencyAboveCap) {
+        warnedConcurrencyAboveCap = true;
+        logger.warn(
+          `SEARCH_CONCURRENCY=${SEARCH_CONCURRENCY} exceeds the per-account cap of ` +
+            `${ACCOUNT_CONCURRENCY} enforced at the API layer (EASYNEWS_ACCOUNT_CONCURRENCY); ` +
+            `the extra search workers just queue there, so values above the cap have no effect`
+        );
+      }
 
       // Count failed searches (e.g. Easynews timeouts) so an all-failure outcome
       // isn't mistaken for a genuine "no results" and cached for the long
       // empty-result TTL. See the empty-result branch below.
       let searchErrors = 0;
 
-      // Run one phase's queries in concurrency-bounded batches, merging results in
-      // query order and re-checking the early-exit threshold between batches.
-      // Throws on an auth error so the outer handler surfaces the auth-error
-      // stream (a single auth failure means every search would fail).
+      // Run one phase's queries through a sliding window of SEARCH_CONCURRENCY
+      // slots — the same createLimiter primitive the api layer uses for the
+      // account cap. FIFO admission in map order keeps dispatch order = query
+      // order, and a freed slot is refilled immediately, so one slow query
+      // never holds an idle slot hostage the way lock-step batches did.
+      // Results are merged into allSearchResults in QUERY order after the
+      // phase, so the downstream dedup-by-hash (first-seen wins) and the cap
+      // select the same results regardless of completion order. The early-exit
+      // threshold is re-checked as each task acquires a slot. Throws on an
+      // auth error so the outer handler surfaces the auth-error stream (a
+      // single auth failure means every search would fail).
       const runSearchPhase = async (queries: string[]): Promise<void> => {
-        for (let i = 0; i < queries.length; i += SEARCH_CONCURRENCY) {
-          if (totalFoundResults >= TOTAL_MAX_RESULTS) {
-            logger.debug(
-              `Already found ${totalFoundResults} unique results, skipping remaining searches`
-            );
-            return;
-          }
+        if (queries.length === 0) return; // e.g. the year phase for series
 
-          const batch = queries.slice(i, i + SEARCH_CONCURRENCY);
-          const settled = await Promise.allSettled(
-            batch.map(query => api.search({ ...sortOptions, query }))
+        const phaseResults: (EasynewsSearchResponse | undefined)[] = new Array(queries.length);
+        let stop = false;
+        const limiter = createLimiter(SEARCH_CONCURRENCY);
+
+        try {
+          await Promise.all(
+            queries.map((query, i) =>
+              limiter.run(async () => {
+                if (stop || totalFoundResults >= TOTAL_MAX_RESULTS) {
+                  if (!stop) {
+                    logger.debug(
+                      `Already found ${totalFoundResults} unique results, skipping remaining searches`
+                    );
+                  }
+                  stop = true;
+                  return;
+                }
+
+                try {
+                  const res = await api.search({ ...sortOptions, query });
+                  phaseResults[i] = res;
+                  logger.debug(`Found ${res?.data?.length || 0} results for "${query}"`);
+                  for (const file of res?.data ?? []) {
+                    seenHashes.add(file['0']);
+                  }
+                  totalFoundResults = seenHashes.size;
+                  logger.debug(`Total unique results so far: ${totalFoundResults}`);
+                } catch (error) {
+                  if (isAuthError(error)) {
+                    stop = true;
+                    throw error;
+                  }
+                  searchErrors++;
+                  logger.error(`Error searching for "${query}":`, error);
+                }
+              })
+            )
           );
-
-          for (let j = 0; j < settled.length; j++) {
-            const outcome = settled[j];
-            const query = batch[j];
-
-            if (outcome.status === 'rejected') {
-              if (isAuthError(outcome.reason)) throw outcome.reason;
-              searchErrors++;
-              logger.error(`Error searching for "${query}":`, outcome.reason);
-              continue;
-            }
-
-            const res = outcome.value;
-            const resultCount = res?.data?.length || 0;
-            logger.debug(`Found ${resultCount} results for "${query}"`);
-            if (resultCount > 0) {
-              allSearchResults.push({ query, result: res });
+        } finally {
+          // Merge landed results in query order (deterministic downstream dedup).
+          for (let i = 0; i < queries.length; i++) {
+            const result = phaseResults[i];
+            if (result?.data?.length) {
+              allSearchResults.push({ query: queries[i], result });
             }
           }
-
-          totalFoundResults = countTotalUniqueResults();
-          logger.debug(`Total unique results so far: ${totalFoundResults}`);
         }
       };
 
