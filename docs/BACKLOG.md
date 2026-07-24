@@ -26,13 +26,13 @@ depth inflate the perceived scope.
 1. **`behaviorHints.filename` is the stable, cross-tool signal; the `🌐`/`💬` code
    lines are AIOStreams-specific polish.** We already set the filename, so language
    detection works across AIOStreams (both paths), other aggregators, and players
-   today. The emoji-code lines are *authoritative augmentation* for the AIOStreams
+   today. The emoji-code lines are _authoritative augmentation_ for the AIOStreams
    **preset** path only — cheap and worth doing, but **not load-bearing** and
    inherently **fragile** (coupled to AIOStreams' undocumented parser; a refactor
    there silently breaks them, with no deprecation notice). Keep filename primary.
 2. **Subtitle langs are the unique prize; audio is partly redundant.** Filenames
    usually encode audio language (→ PTT recovers it), but almost never subtitle
-   language — so `slangs` is data *no other signal carries*. The subtitle line has
+   language — so `slangs` is data _no other signal carries_. The subtitle line has
    the strongest unique-value case, even though it needs the upstream PR to be
    machine-consumed.
 
@@ -44,7 +44,7 @@ depth inflate the perceived scope.
   Easynews++ preset instance before calling it done — the "safe to ship" analysis is
   sound reasoning, not yet a real-instance test.
 - **P2 — one upstream PR (higher leverage, maintainer-paced):** alias fix
-  (+`slo→slv`) so B-codes work for *all* external addons, plus the `💬`
+  (+`slo→slv`) so B-codes work for _all_ external addons, plus the `💬`
   `getSubtitles` override. Backward-compatible + symmetric. Don't block P1 on it.
 - **P3 — deferred, evidence-gated:** v3 migration (item 3). Its concurrency benefit
   is **unmeasured**; V2-retirement risk is low; cost is a real normalization layer.
@@ -52,7 +52,7 @@ depth inflate the perceived scope.
 
 **Open question (needs usage data, not derivable from code):** what fraction of our
 users are direct-Stremio vs via AIOStreams? We currently show raw ISO codes
-(`🌐 eng, deu`) to *all* direct users to satisfy AIOStreams' code-parser. If direct
+(`🌐 eng, deu`) to _all_ direct users to satisfy AIOStreams' code-parser. If direct
 users are the majority, that degrades their UX for an AIOStreams minority — and we'd
 prefer names/flags for humans (and ask AIOStreams to parse those, or accept
 filename-only there). Default until data exists: keep codes (pre-existing, cheap, and
@@ -100,11 +100,11 @@ data Easynews already hands us.
    This is the SAME line as the subtitle-emit in item 2 — one line serves both the
    human-readable display (for clients that render our description) and the future
    AIOStreams parser. Use codes (matching `🌐`), not names. **Important:** keep
-   subtitle langs *out* of the `🌐` line — `EasynewsPlusPlusParser` treats
+   subtitle langs _out_ of the `🌐` line — `EasynewsPlusPlusParser` treats
    everything after `🌐` as **audio** (see item 2), so mixing subs there mislabels
    them. Safe to ship now — see item 2's "progressive enhancement" note.
-3. This is metadata/labelling only — 2.0 (and 3.0) report the *languages present
-   in the post*, not downloadable standalone `.srt` files. Attaching real subtitle
+3. This is metadata/labelling only — 2.0 (and 3.0) report the _languages present
+   in the post_, not downloadable standalone `.srt` files. Attaching real subtitle
    tracks via `Stream.subtitles[]` (`{ id, url, lang }`, `lang` = ISO 639-2) would
    require actually extracting subs and is out of scope here (noted so it isn't
    re-researched).
@@ -119,7 +119,7 @@ data Easynews already hands us.
 AIOStreams according to some reference template."
 
 **Status:** researched (source-verified against AIOStreams `main`, commit `7f9a9b6`,
-via multiple independent traces). **The premise was wrong: there *is* a template,
+via multiple independent traces). **The premise was wrong: there _is_ a template,
 it's for us specifically, and we already emit it — but with a code-format bug that
 silently drops German/French/Dutch/Chinese.** The fix is tiny and high-value.
 
@@ -139,7 +139,7 @@ the working path, our audio-language reporting **already functions today** — n
 emojis needed. (This corrects an earlier draft of this item that recommended flag
 emojis; see "Do NOT add flags" below.)
 
-### Reachability: works via the Easynews++ *preset*, not custom-URL
+### Reachability: works via the Easynews++ _preset_, not custom-URL
 
 Parser selection is keyed on the **AIOStreams preset**, not our manifest id/name.
 `PresetManager.fromId('easynewsPlusPlus')` → `EasynewsPlusPlusPreset` →
@@ -162,9 +162,9 @@ Parser selection is keyed on the **AIOStreams preset**, not our manifest id/name
 Source-verified against AIOStreams `main`@`7f9a9b6`. The Easynews++ parser's
 `convertISO6392ToLanguage()` (`parser/streams.ts:644-649`) does a **raw strict
 match** — `FULL_LANGUAGE_MAPPING.find(l => l.iso_639_2 === code)` — with **no alias
-normalization**. AIOStreams *does* ship a `LANGUAGE_ALIAS_MAP` + `normaliseLangCode()`
+normalization**. AIOStreams _does_ ship a `LANGUAGE_ALIAS_MAP` + `normaliseLangCode()`
 (`utils/languages.ts`, maps `ger→deu`, `fre→fra`, `dut→nld`, `chi→zho`, …) — but it
-is wired only into the *builtin-scraper* path (`normaliseLanguage`, `media-info.ts`),
+is wired only into the _builtin-scraper_ path (`normaliseLanguage`, `media-info.ts`),
 **never** the external-addon `getLanguages()` → `convertISO6392ToLanguage()` path.
 `FULL_LANGUAGE_MAPPING` stores only 639-2/T codes, so a B-code misses and is dropped
 by the `.filter(l => l !== undefined)` in `getLanguages()`.
@@ -208,7 +208,7 @@ wel→cym`, and **`slo→slv`** (Slovenian).
    — its own alias map exists but isn't applied on the external-addon path. A
    one-line change routing `code` through `normaliseLangCode()` inside
    `convertISO6392ToLanguage()` (as the sibling `normaliseLanguage`/`media-info`
-   paths already do) fixes B-codes for *every* external addon, not just us — plus
+   paths already do) fixes B-codes for _every_ external addon, not just us — plus
    the `slo→slv` correction. Bundle with the subtitle PR below.
 
 Route 1 is the tiny, immediate win; it doesn't wait on an upstream merge/deploy.
@@ -219,7 +219,7 @@ Route 1 is the tiny, immediate win; it doesn't wait on an upstream merge/deploy.
 doesn't call `super`). So on the preset path, flag emojis in our description are
 **ignored** — adding them would not help and clutters the UI. (They would only help
 the secondary custom-URL audience, via the base parser. If we ever want to serve
-that audience too, flags are an *optional, additive* extra — but the primary,
+that audience too, flags are an _optional, additive_ extra — but the primary,
 correct move is the `🌐` T-code line above.)
 
 ### Subtitles to AIOStreams — a symmetric `💬` convention + one-file PR
@@ -227,24 +227,26 @@ correct move is the `🌐` T-code line above.)
 Today AIOStreams has **no** way to ingest subtitle languages from an external addon
 (`EasynewsPlusPlusParser` has no `getSubtitles()`; the structured
 `MediaInfo`/`subtitle[]` pipeline is builtin-scraper-only; Torrentio's `"Multi Subs"`
-marker is bound to *its* subclass). So until upstream changes, `slangs` stays a
+marker is bound to _its_ subclass). So until upstream changes, `slangs` stays a
 human-readable line for direct clients (item 1). But because AIOStreams already
-maintains a parser *for us*, first-class subtitle support is a small, likely-accepted
+maintains a parser _for us_, first-class subtitle support is a small, likely-accepted
 PR. Design chosen to be **maximally symmetric with the existing `🌐` audio path** so
 the diff is trivial and idiomatic:
 
 **We emit** a second marker line, identical in shape to the audio line, using a
 distinct subtitle emoji and the same comma-separated **639-2/T** codes:
+
 ```
 🌐 eng, deu          ← audio (existing)
 💬 eng, fra, deu     ← subtitles (new, same shape; B→T normalized too)
 ```
+
 `💬` has the Emoji_Presentation property, so it cleanly terminates the `🌐` capture
 above it (swap for `📝`/`🔤` if preferred — design is emoji-agnostic).
 
 **The AIOStreams PR** mirrors a pattern already in their tree — Torrentio's parser
 overrides `getParsedFile()` to merge subtitle languages (`presets/torrentio.ts`). Do
-the same on `EasynewsPlusPlusParser`: read the `💬` line via the *same*
+the same on `EasynewsPlusPlusParser`: read the `💬` line via the _same_
 `getRegexForTextAfterEmojis(['💬'])` + `convertISO6392ToLanguage` helpers already
 used for `🌐`, and push into `parsedFile.subtitles`. Essentially a copy of their own
 `getLanguages()` pointed at a new emoji + target field.
@@ -257,6 +259,7 @@ PR** — one coherent, obviously-correct contribution.
 
 **Safe to ship the emit side NOW (progressive enhancement).** Adding the `💬` line
 today breaks nothing:
+
 - It won't corrupt the existing `🌐` audio parse — the `🌐` capture terminates at
   its line-end (regex lookahead `(?=\p{Emoji_Presentation}|$|\n)`; description lines
   are `\n`-joined). Verified newline-termination behaviour.
