@@ -91,6 +91,7 @@ vi.mock('../src/i18n', () => ({
       },
     },
   },
+  normalizeLangCodes: (codes: string[]) => codes,
 }));
 
 vi.mock('@stremio-addon/compat', () => {

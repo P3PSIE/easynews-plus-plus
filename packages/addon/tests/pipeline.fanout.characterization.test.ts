@@ -43,6 +43,7 @@ vi.mock('../src/i18n', () => ({
   getUILanguage: vi.fn().mockReturnValue('eng'),
   translations: { eng: { errors: { authFailed: 'auth failed' } } },
   ISO_TO_LANGUAGE: { eng: 'en' },
+  normalizeLangCodes: (codes: string[]) => codes,
 }));
 
 vi.mock('@stremio-addon/compat', () => ({
