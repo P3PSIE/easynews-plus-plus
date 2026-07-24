@@ -25,7 +25,7 @@ import { EasynewsAPI, SearchOptions, EasynewsSearchResponse } from 'easynews-plu
 import { publicMetaProvider } from './meta.js';
 import { Stream } from './types.js';
 import customTitlesJson from '../../../custom-titles.json' with { type: 'json' };
-import { getUILanguage, translations } from './i18n/index.js';
+import { getUILanguage, normalizeLangCodes, translations } from './i18n/index.js';
 import { createLogger, parseIntEnv } from 'easynews-plus-plus-shared';
 
 // Extended configuration interface
@@ -1068,10 +1068,25 @@ function mapStream({
   // Calculate days since upload
   const publishDate = getPublishDate(file.ts);
 
-  // Show language information in the description if available
-  const languageInfo = file.alangs?.length
-    ? `🌐 ${file.alangs.join(', ')}${preferredLang && file.alangs.includes(preferredLang) ? ' ⭐' : ''}`
+  // Normalize audio/subtitle codes B→T once, and normalize the preferred code the
+  // same way, so the display, the ⭐ mark and the sort key (hasPreferredLang below)
+  // all read from a single, consistent code space. Easynews returns ISO 639-2/B
+  // (`ger`, `fre`, …); downstream parsers key on /T (`deu`, `fra`, …).
+  const audioLangs = normalizeLangCodes(file.alangs ?? []);
+  const subtitleLangs = normalizeLangCodes(file.slangs ?? []);
+  const wantLang = preferredLang ? normalizeLangCodes([preferredLang])[0] : undefined;
+  const hasPreferredLang = !!wantLang && audioLangs.includes(wantLang);
+
+  // Audio-language line (only the ⭐ is conditional; codes are always normalized).
+  const languageInfo = audioLangs.length
+    ? `🌐 ${audioLangs.join(', ')}${hasPreferredLang ? ' ⭐' : ''}`
     : '🌐 Unknown';
+
+  // Subtitle line, parallel to the audio line — emitted only when at least one
+  // real code survives normalization (no "Unknown" fallback, no bare `💬 ` line).
+  // `💬` has the Emoji_Presentation property, so it cleanly terminates the `🌐`
+  // capture above it for parsers that read these lines.
+  const subtitleInfo = subtitleLangs.length ? `💬 ${subtitleLangs.join(', ')}` : undefined;
 
   // Precompute everything the sort comparator needs, once, so it never re-parses
   // the display strings below. Stripped off again before the response is cached
@@ -1082,8 +1097,7 @@ function mapStream({
     sizeUnit: parsedSize.unit,
     sizeValue: parsedSize.value,
     dateMs: file['5'] ? new Date(file['5']).getTime() : 0,
-    hasPreferredLang:
-      !!preferredLang && Array.isArray(file.alangs) && file.alangs.includes(preferredLang),
+    hasPreferredLang,
   };
 
   // bingeGroup lets the player auto-continue the next episode from the SAME
@@ -1105,6 +1119,7 @@ function mapStream({
       `🕛 ${duration ?? 'unknown duration'}`,
       `📦 ${size ?? 'unknown size'} ${publishDate}`,
       languageInfo,
+      ...(subtitleInfo ? [subtitleInfo] : []),
     ].join('\n'),
     url: url,
     behaviorHints: {
