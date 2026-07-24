@@ -27,7 +27,9 @@ vi.mock('../src/manifest', () => ({
 
 const mockSearch = vi.fn();
 
-vi.mock('easynews-plus-plus-api', () => ({
+vi.mock('easynews-plus-plus-api', async importOriginal => ({
+  // Spread the real module so non-mocked exports (createLimiter) stay live.
+  ...(await importOriginal<typeof import('easynews-plus-plus-api')>()),
   EasynewsAPI: vi.fn().mockImplementation(() => ({ search: mockSearch })),
 }));
 
@@ -103,6 +105,7 @@ describe('search fan-out concurrency', () => {
 
   afterEach(() => {
     delete process.env.SEARCH_CONCURRENCY;
+    delete process.env.EASYNEWS_ACCOUNT_CONCURRENCY;
     delete process.env.TOTAL_MAX_RESULTS;
   });
 
@@ -143,12 +146,31 @@ describe('search fan-out concurrency', () => {
     expect(third.at).toBeLessThan(40);
   });
 
-  it('warns when SEARCH_CONCURRENCY is raised above the measured account cap', async () => {
+  // ORDER MATTERS: this test must run before any test that trips the
+  // warn-once flag, or its "not called" assertion would pass vacuously.
+  it('does not warn when SEARCH_CONCURRENCY matches a raised account cap (escape hatch)', async () => {
+    // Operator legitimately raised both knobs after Easynews changed its cap;
+    // the threshold must derive from EASYNEWS_ACCOUNT_CONCURRENCY, not a
+    // hardcoded 2.
+    process.env.SEARCH_CONCURRENCY = '4';
+    process.env.EASYNEWS_ACCOUNT_CONCURRENCY = '4';
+    mockSearch.mockImplementation(async () => ({ data: [], ...DL }));
+
+    await runHandler('tt0000104');
+
+    expect(mockWarn).not.toHaveBeenCalled();
+  });
+
+  it('warns when SEARCH_CONCURRENCY is raised above the account cap', async () => {
     process.env.SEARCH_CONCURRENCY = '5';
     mockSearch.mockImplementation(async () => ({ data: [], ...DL }));
 
     await runHandler('tt0000103');
 
     expect(mockWarn).toHaveBeenCalledWith(expect.stringMatching(/concurren/i));
+    // The warning must describe the actual consequence (the API layer caps
+    // in-flight searches, so the excess is ineffective) — not claim throttling
+    // that the limiter prevents.
+    expect(mockWarn).not.toHaveBeenCalledWith(expect.stringMatching(/throttl/i));
   });
 });

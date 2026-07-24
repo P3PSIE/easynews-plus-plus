@@ -27,34 +27,84 @@ const MAX_CACHE_ENTRIES = parseIntEnv(process.env.MAX_CACHE_ENTRIES, 1000);
 // here — shared across EasynewsAPI instances via a per-credential limiter —
 // rather than left to callers' batching discipline. EASYNEWS_ACCOUNT_CONCURRENCY
 // exists as an escape hatch should Easynews ever change the cap.
-type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
+export interface Limiter {
+  /** Runs `task` once a slot is free; `signal` aborts the wait (not the task). */
+  run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T>;
+  /** True when no task holds or awaits a slot (safe to evict / recreate). */
+  readonly isIdle: boolean;
+}
 
-function createLimiter(max: number): Limiter {
+export function createLimiter(max: number): Limiter {
   let active = 0;
-  const queue: Array<() => void> = [];
+  type Waiter = { grant: () => void };
+  const queue: Waiter[] = [];
   // On completion the slot is handed directly to the next waiter (active is NOT
   // decremented in between) — decrementing first would open a window where a
   // new caller sneaks in and the woken waiter overshoots the cap.
   const release = () => {
     const next = queue.shift();
-    if (next) next();
+    if (next) next.grant();
     else active--;
   };
-  return async function run<T>(task: () => Promise<T>): Promise<T> {
-    if (active >= max) {
-      await new Promise<void>(resolve => queue.push(resolve));
-    } else {
-      active++;
-    }
-    try {
-      return await task();
-    } finally {
-      release();
-    }
+  return {
+    get isIdle() {
+      return active === 0 && queue.length === 0;
+    },
+    async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      if (signal?.aborted) throw signal.reason ?? new Error('The operation was aborted');
+      if (active >= max) {
+        await new Promise<void>((resolve, reject) => {
+          let cleanup = () => {};
+          const waiter: Waiter = {
+            grant: () => {
+              cleanup();
+              resolve();
+            },
+          };
+          if (signal) {
+            // An aborted waiter is spliced OUT of the queue before rejecting,
+            // so it never held a slot and release() never hands it one — no
+            // slot leak, no double-grant (grant removes it from the queue
+            // first, making the later indexOf miss).
+            const onAbort = () => {
+              const index = queue.indexOf(waiter);
+              if (index !== -1) {
+                queue.splice(index, 1);
+                reject(signal.reason ?? new Error('The operation was aborted'));
+              }
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            cleanup = () => signal.removeEventListener('abort', onAbort);
+          }
+          queue.push(waiter);
+        });
+      } else {
+        active++;
+      }
+      try {
+        return await task();
+      } finally {
+        release();
+      }
+    },
   };
 }
 
 const accountLimiters = new Map<string, Limiter>();
+
+// Cloudflare Workers forbids performing I/O on behalf of a different request:
+// a queued task resumed by another request's release(), or a caller awaiting
+// another request's coalesced fetch promise, would execute I/O inside that
+// other request's IoContext and be rejected or cancelled by workerd. On
+// Workers we therefore fall back to per-instance limiting (the addon
+// constructs one EasynewsAPI per stream request) and skip in-flight
+// coalescing — weaker cross-request enforcement, but correct.
+function isCloudflareWorkers(): boolean {
+  return (
+    (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent ===
+    'Cloudflare-Workers'
+  );
+}
 
 // In-flight identical searches are coalesced onto one promise (the response
 // cache only dedupes COMPLETED searches, so without this two simultaneous
@@ -93,19 +143,48 @@ export class EasynewsAPI {
     this.credKey = credFingerprint(this.username, this.password);
   }
 
-  /** Clears the shared search cache (primarily for tests / operational reset). */
+  /**
+   * Clears the shared search cache (primarily for tests / operational reset).
+   * Not safe while searches are in flight: discarding a busy limiter lets the
+   * next search overshoot the per-account cap with fresh slots.
+   */
   static clearCache(): void {
     sharedCache.clear();
     accountLimiters.clear();
     inflightSearches.clear();
   }
 
+  /** Sizes of the module-level registries (operational introspection). */
+  static stats(): { cacheEntries: number; accountLimiters: number; inflightSearches: number } {
+    return {
+      cacheEntries: sharedCache.size,
+      accountLimiters: accountLimiters.size,
+      inflightSearches: inflightSearches.size,
+    };
+  }
+
+  private instanceLimiter?: Limiter;
+
   private getLimiter(): Limiter {
+    const max = Math.max(1, parseIntEnv(process.env.EASYNEWS_ACCOUNT_CONCURRENCY, 2));
+    if (isCloudflareWorkers()) {
+      return (this.instanceLimiter ??= createLimiter(max));
+    }
     let limiter = accountLimiters.get(this.credKey);
     if (!limiter) {
-      const max = Math.max(1, parseIntEnv(process.env.EASYNEWS_ACCOUNT_CONCURRENCY, 2));
       limiter = createLimiter(max);
       accountLimiters.set(this.credKey, limiter);
+      // Bound the registry like sharedCache: evict the oldest IDLE limiters.
+      // An idle limiter carries no state and is recreated on demand; a busy
+      // one must survive or the account cap could be overshot.
+      if (accountLimiters.size > MAX_CACHE_ENTRIES) {
+        for (const [key, candidate] of accountLimiters) {
+          if (accountLimiters.size <= MAX_CACHE_ENTRIES) break;
+          if (key !== this.credKey && candidate.isIdle) {
+            accountLimiters.delete(key);
+          }
+        }
+      }
     }
     return limiter;
   }
@@ -195,6 +274,52 @@ export class EasynewsAPI {
       return cachedResult;
     }
 
+    // The timeout covers the WHOLE search — limiter queue wait included — so a
+    // request starved behind a busy account still settles within timeoutMs
+    // instead of waiting indefinitely for a slot.
+    const timeoutMs = Math.max(1, parseIntEnv(process.env.SEARCH_TIMEOUT_MS, 20_000));
+    const signal = AbortSignal.timeout(timeoutMs);
+
+    const run = () =>
+      this.getLimiter()
+        .run(
+          () =>
+            this.doSearch(
+              {
+                query,
+                pageNr,
+                maxResults,
+                sort1,
+                sort1Direction,
+                sort2,
+                sort2Direction,
+                sort3,
+                sort3Direction,
+              },
+              cacheKey,
+              signal
+            ),
+          signal
+        )
+        .catch(error => {
+          // AbortSignal.timeout rejects with a DOMException named
+          // 'TimeoutError' (both while queued and mid-fetch); a plain abort
+          // yields 'AbortError'. Map both to the friendly message.
+          const name = (error as { name?: string })?.name;
+          if (name === 'TimeoutError' || name === 'AbortError') {
+            logger.debug(`Search request timed out for: "${query}"`);
+            throw new Error(
+              `Search request for '${query}' timed out after ${timeoutMs / 1000} seconds`
+            );
+          }
+          throw error;
+        });
+
+    if (isCloudflareWorkers()) {
+      // No module-level promise sharing on Workers (see isCloudflareWorkers).
+      return run();
+    }
+
     // Coalesce onto an identical in-flight search instead of spending a second
     // account slot on the same work.
     const pending = inflightSearches.get(cacheKey);
@@ -203,23 +328,12 @@ export class EasynewsAPI {
       return pending;
     }
 
-    const request = this.getLimiter()(() =>
-      this.doSearch(
-        {
-          query,
-          pageNr,
-          maxResults,
-          sort1,
-          sort1Direction,
-          sort2,
-          sort2Direction,
-          sort3,
-          sort3Direction,
-        },
-        cacheKey
-      )
-    ).finally(() => {
-      inflightSearches.delete(cacheKey);
+    const request = run().finally(() => {
+      // Guarded: after a clearCache() a NEWER request may own this key — only
+      // the promise that registered the entry may remove it.
+      if (inflightSearches.get(cacheKey) === request) {
+        inflightSearches.delete(cacheKey);
+      }
     });
     inflightSearches.set(cacheKey, request);
     return request;
@@ -238,7 +352,8 @@ export class EasynewsAPI {
       sort3,
       sort3Direction,
     }: Required<Omit<SearchOptions, 'query'>> & { query: string },
-    cacheKey: string
+    cacheKey: string,
+    signal: AbortSignal
   ): Promise<EasynewsSearchResponse> {
     const searchParams = {
       st: 'adv',
@@ -271,7 +386,7 @@ export class EasynewsAPI {
         headers: {
           Authorization: createBasic(this.username, this.password),
         },
-        signal: AbortSignal.timeout(20_000), // 20 seconds
+        signal, // the caller's whole-search timeout (queue wait included)
       });
 
       if (res.status === 401) {
@@ -293,10 +408,9 @@ export class EasynewsAPI {
       return json;
     } catch (error) {
       if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          logger.debug(`Search request timed out for: "${query}"`);
-          throw new Error(`Search request for '${query}' timed out after 20 seconds`);
-        }
+        // Timeout/abort rejections are mapped to a friendly message by
+        // search()'s catch (they can also fire while queued, before this
+        // method even runs) — just pass them through here.
         logger.debug(`Error during search: ${error.message}`);
         throw error;
       }
