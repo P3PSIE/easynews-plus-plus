@@ -47,6 +47,7 @@ function makeFakeClient() {
 function makeRes() {
   const res = {
     headersSent: false,
+    setHeader: vi.fn(),
     redirect: vi.fn(() => {
       res.headersSent = true;
     }),

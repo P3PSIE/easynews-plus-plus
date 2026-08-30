@@ -22,8 +22,67 @@ logger.debug('Initializing Cloudflare Worker with addon interface');
 const stremioRouter = createRouter(addonInterface);
 const addonRouter = new Hono();
 addonRouter.all('*', async c => {
-  const res = await stremioRouter(c.req.raw);
-  return res ?? c.notFound();
+  const req = c.req.raw;
+  const isStreamReq = c.req.method === 'GET' && c.req.path.includes('/stream/');
+  const isManifestReq = c.req.method === 'GET' && c.req.path.endsWith('/manifest.json');
+
+  // Check Cloudflare edge cache for stream / manifest endpoints
+  let cfCache: Cache | undefined;
+  try {
+    if (typeof caches !== 'undefined' && (caches as any).default) {
+      const defaultCache: Cache = (caches as any).default;
+      cfCache = defaultCache;
+      if (isStreamReq || isManifestReq) {
+        const cachedRes = await defaultCache.match(req);
+        if (cachedRes) {
+          logger.debug(`Edge cache HIT for ${c.req.path}`);
+          return cachedRes;
+        }
+      }
+    }
+  } catch (err) {
+    logger.debug(`Cache API lookup error: ${err}`);
+  }
+
+  const res = await stremioRouter(req);
+  if (!res) return c.notFound();
+
+  // If request was successful, apply Cache-Control headers and store in edge cache
+  if (res.status === 200 && (isStreamReq || isManifestReq)) {
+    const headers = new Headers(res.headers);
+    if (isManifestReq) {
+      headers.set(
+        'Cache-Control',
+        'public, max-age=3600, s-maxage=86400, stale-while-revalidate=86400'
+      );
+    } else if (isStreamReq) {
+      // Apply stream edge cache headers if not explicitly marked uncached
+      if (!headers.has('Cache-Control')) {
+        headers.set(
+          'Cache-Control',
+          'public, max-age=3600, s-maxage=3600, stale-while-revalidate=7200'
+        );
+      }
+    }
+
+    const responseToCache = new Response(res.clone().body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
+
+    if (cfCache) {
+      try {
+        c.executionCtx?.waitUntil(cfCache.put(req, responseToCache.clone()));
+      } catch (err) {
+        logger.debug(`Edge cache put error: ${err}`);
+      }
+    }
+
+    return responseToCache;
+  }
+
+  return res;
 });
 logger.debug('Created Stremio router with addon interface');
 
@@ -68,6 +127,7 @@ app.get('/resolve/:payload/:filename', async c => {
   // on Workers; see the cache rationale in packages/addon/src/resolve.ts).
   const cachedUrl = getCachedResolvedUrl(encodedUrl);
   if (cachedUrl) {
+    c.header('Cache-Control', 'private, max-age=300');
     return c.redirect(cachedUrl, 307);
   }
 
@@ -106,7 +166,8 @@ app.get('/resolve/:payload/:filename', async c => {
     // Cache the resolved CDN URL so seeks / retries skip the round-trip.
     if (redirectLocation) setCachedResolvedUrl(encodedUrl, location);
 
-    // Redirect to the final URL
+    // Redirect to the final URL with Cache-Control header
+    c.header('Cache-Control', 'private, max-age=300');
     return c.redirect(location, 307);
   } catch (err) {
     logger.error(`Error resolving stream ${cleanUrl}:`, err);

@@ -46,6 +46,7 @@ export function createResolveHandler(deps: ResolveHandlerDeps) {
     // cache rationale in ./resolve.ts). Still 307 so the player behaves the same.
     const cachedUrl = getCachedResolvedUrl(payload);
     if (cachedUrl) {
+      res.setHeader('Cache-Control', 'private, max-age=300');
       res.redirect(307, cachedUrl);
       return;
     }
@@ -115,6 +116,7 @@ export function createResolveHandler(deps: ResolveHandlerDeps) {
         // would amplify failures, and it matches the Worker (caches Location only).
         if (finalUrl !== cleanUrl) setCachedResolvedUrl(payload, finalUrl);
         settled = true;
+        res.setHeader('Cache-Control', 'private, max-age=300');
         res.redirect(307, finalUrl);
         // We only needed the headers (the final URL). Drain and destroy the
         // upstream response so its idle keep-alive socket cannot later fire the

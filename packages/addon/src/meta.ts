@@ -33,8 +33,37 @@ if (!TMDB_API_KEY) {
 // stream request indefinitely. Bound every metadata fetch; override via env.
 const META_FETCH_TIMEOUT_MS = Number(process.env.META_FETCH_TIMEOUT_MS) || 5000;
 
+interface CachedMeta {
+  name: string;
+  originalName?: string;
+  alternativeNames?: string[];
+  year?: number;
+  expires: number;
+}
+
+// In-memory cache for metadata results (name, year, alternativeNames are immutable per IMDb ID)
+const metaCache = new Map<string, CachedMeta>();
+const META_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_META_CACHE_ENTRIES = 2000;
+
+/** Clears the in-memory metadata cache (primarily for tests / operational reset). */
+export function clearMetaCache(): void {
+  metaCache.clear();
+}
+
 function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, { ...init, signal: AbortSignal.timeout(META_FETCH_TIMEOUT_MS) });
+  const isCloudflare = typeof process !== 'undefined' && process.env?.CLOUDFLARE === 'true';
+  const cfInit: RequestInit & { cf?: Record<string, unknown> } = {
+    ...init,
+    signal: AbortSignal.timeout(META_FETCH_TIMEOUT_MS),
+  };
+  if (isCloudflare) {
+    cfInit.cf = {
+      cacheTtl: 86400 * 7, // 7 days Cloudflare edge cache for external metadata APIs
+      cacheEverything: true,
+    };
+  }
+  return fetch(url, cfInit);
 }
 
 /**
@@ -280,14 +309,30 @@ async function cinemetaMetaProvider(
 }
 
 /**
- * Fetches metadata from IMDB and use Cinemeta as a fallback.
+ * Fetches metadata from IMDB and use Cinemeta as a fallback, cached in memory.
  */
 export async function publicMetaProvider(
   id: string,
   type: string,
   preferredLanguage?: string
 ): Promise<MetaProviderResponse> {
-  return imdbMetaProvider(id, preferredLanguage)
+  const [tt, season, episode] = id.split(':');
+  const cacheKey = `${tt}:${type}:${preferredLanguage || ''}`;
+  const cached = metaCache.get(cacheKey);
+
+  if (cached && cached.expires > Date.now()) {
+    logger.debug(`Meta cache HIT for ${cacheKey}: "${cached.name}"`);
+    return {
+      name: cached.name,
+      originalName: cached.originalName,
+      alternativeNames: cached.alternativeNames ? [...cached.alternativeNames] : undefined,
+      year: cached.year,
+      season,
+      episode,
+    };
+  }
+
+  const meta = await imdbMetaProvider(id, preferredLanguage)
     .catch(error => {
       // The IMDb suggestion API can return no match (e.g. obscure or non-English
       // titles), which previously threw and skipped the Cinemeta fallback
@@ -295,18 +340,35 @@ export async function publicMetaProvider(
       logger.debug(`IMDb metadata lookup failed, falling back to Cinemeta: ${error}`);
       return { name: '' } as MetaProviderResponse;
     })
-    .then(meta => {
-      if (meta.name) {
-        return meta;
+    .then(result => {
+      if (result.name) {
+        return result;
       }
 
       return cinemetaMetaProvider(id, type, preferredLanguage);
     })
-    .then(meta => {
-      if (meta.name) {
-        return meta;
+    .then(result => {
+      if (result.name) {
+        return result;
       }
 
       throw new Error('Failed to find metadata');
     });
+
+  // Store resolved metadata in cache (keyed by show/movie tt ID)
+  metaCache.set(cacheKey, {
+    name: meta.name,
+    originalName: meta.originalName,
+    alternativeNames: meta.alternativeNames,
+    year: meta.year,
+    expires: Date.now() + META_CACHE_TTL_MS,
+  });
+
+  while (metaCache.size > MAX_META_CACHE_ENTRIES) {
+    const oldest = metaCache.keys().next().value;
+    if (oldest === undefined) break;
+    metaCache.delete(oldest);
+  }
+
+  return meta;
 }
