@@ -24,5 +24,4 @@ SEARCH_CONCURRENCY = "5" # Title-variant searches run in parallel batches of thi
 META_FETCH_TIMEOUT_MS = "5000" # Timeout (ms) for metadata lookups (IMDb / Cinemeta / TMDB)
 MAX_CACHE_ENTRIES = "1000" # Max entries kept in the in-memory search-results cache
 RESOLVE_CACHE_TTL_SECONDS = "300" # How long the /resolve proxy reuses a resolved CDN URL (seconds)
-FAST_PATH_MIN_RESULTS = "15" # Minimum matching results from primary title before skipping slower alternative title fanout
 TMDB_API_KEY = "" # Add encrypted value to your Cloudflare worker instance

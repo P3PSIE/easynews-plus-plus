@@ -418,7 +418,6 @@ builder.defineStreamHandler(
 
       // Early exit condition - limit API calls
       const TOTAL_MAX_RESULTS = parseIntEnv(process.env.TOTAL_MAX_RESULTS, 500);
-      const FAST_PATH_MIN_RESULTS = parseIntEnv(process.env.FAST_PATH_MIN_RESULTS, 15);
       let totalFoundResults = 0;
 
       // Running dedup of every file hash seen across all searches. Workers add
@@ -426,10 +425,10 @@ builder.defineStreamHandler(
       // is maintained incrementally instead of being recomputed per completion.
       const seenHashes = new Set<string>();
 
-      // Build queries for a subset of titles
-      const buildQueriesFor = (titles: string[], withYear: boolean): string[] => {
+      // Build queries for all title variants
+      const buildQueries = (withYear: boolean): string[] => {
         const out: string[] = [];
-        for (const titleVariant of titles) {
+        for (const titleVariant of allTitles) {
           if (!titleVariant.trim()) continue;
           out.push(
             buildSearchQuery(type, {
@@ -442,28 +441,18 @@ builder.defineStreamHandler(
         return out;
       };
 
-      const primaryTitles = allTitles.slice(0, 1);
-      const altTitles = allTitles.slice(1);
-
-      // Primary title query without year
-      const primaryNoYearQueries = dedupeIgnoreCase(buildQueriesFor(primaryTitles, false));
-      const primaryNoYearKeys = new Set(primaryNoYearQueries.map(q => q.toLowerCase()));
-
-      // Alternative title queries without year (excluding anything already queried in primary)
-      const altNoYearQueries = dedupeIgnoreCase(buildQueriesFor(altTitles, false)).filter(
-        q => !primaryNoYearKeys.has(q.toLowerCase())
-      );
-      const allNoYearKeys = new Set([
-        ...primaryNoYearKeys,
-        ...altNoYearQueries.map(q => q.toLowerCase()),
-      ]);
-
-      // Year queries (only if year is known and not already covered)
+      // De-duplicate to avoid spending rate-limited API calls on identical
+      // searches. The no-year phase is deduped case-insensitively; the year
+      // phase additionally drops anything already covered by the no-year phase.
+      // For series this empties the year phase entirely (buildSearchQuery ignores
+      // the year for series, so it produces the same strings) — which previously
+      // re-fired the no-year queries when they failed, adding load during
+      // throttling. Also collapses case variants like "loegnen"/"Loegnen".
+      const noYearQueries = dedupeIgnoreCase(buildQueries(false));
+      const noYearKeys = new Set(noYearQueries.map(q => q.toLowerCase()));
       const yearQueries =
         meta.year !== undefined
-          ? dedupeIgnoreCase(buildQueriesFor(allTitles, true)).filter(
-              q => !allNoYearKeys.has(q.toLowerCase())
-            )
+          ? dedupeIgnoreCase(buildQueries(true)).filter(q => !noYearKeys.has(q.toLowerCase()))
           : [];
 
       // BOUNDED concurrency instead of one-at-a-time (the sequential fan-out
@@ -491,19 +480,17 @@ builder.defineStreamHandler(
       // empty-result TTL. See the empty-result branch below.
       let searchErrors = 0;
 
-      const allSearchQueries = [...primaryNoYearQueries, ...altNoYearQueries, ...yearQueries];
+      const allSearchQueries = [...noYearQueries, ...yearQueries];
 
       logger.debug(
-        `Running adaptive searches for ${allTitles.length} title variants (${allSearchQueries.length} total queries: ${primaryNoYearQueries.length} primary, ${altNoYearQueries.length} alt, ${yearQueries.length} year; threshold: ${FAST_PATH_MIN_RESULTS})`
+        `Running bounded search fanout for ${allTitles.length} title variants (${noYearQueries.length} no-year + ${yearQueries.length} year searches)`
       );
 
       // Run all queries through a sliding window of SEARCH_CONCURRENCY slots
       // — the same createLimiter primitive the api layer uses for the account cap.
       // FIFO admission in map order keeps dispatch order = query order, and a freed
-      // slot is refilled immediately. Primary queries run first; if they return >=
-      // FAST_PATH_MIN_RESULTS, subsequent alternative and year queries are skipped.
-      // Results are merged into allSearchResults in QUERY order after the search,
-      // so downstream dedup-by-hash is fully deterministic.
+      // slot is refilled immediately. Results are merged into allSearchResults in
+      // QUERY order after the search, so downstream dedup-by-hash is fully deterministic.
       const phaseResults: (EasynewsSearchResponse | undefined)[] = new Array(
         allSearchQueries.length
       );
@@ -514,16 +501,8 @@ builder.defineStreamHandler(
         await Promise.all(
           allSearchQueries.map((query, i) =>
             limiter.run(async () => {
-              if (
-                stop ||
-                (totalFoundResults >= FAST_PATH_MIN_RESULTS && i >= primaryNoYearQueries.length) ||
-                totalFoundResults >= TOTAL_MAX_RESULTS
-              ) {
-                if (
-                  !stop &&
-                  (totalFoundResults >= FAST_PATH_MIN_RESULTS ||
-                    totalFoundResults >= TOTAL_MAX_RESULTS)
-                ) {
+              if (stop || totalFoundResults >= TOTAL_MAX_RESULTS) {
+                if (!stop) {
                   logger.debug(
                     `Already found ${totalFoundResults} unique results, skipping remaining searches`
                   );
