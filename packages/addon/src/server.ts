@@ -105,7 +105,7 @@ function serveHTTP(addonInterface: AddonInterface, opts: ServerOptions = {}) {
   app.get('/resolve/:payload/:filename', createResolveHandler({ logger }));
 
   if (hasConfig)
-    app.get('/configure', (req: Request, res: Response) => {
+    app.get(['/configure', '/:config/configure'], (req: Request, res: Response) => {
       // Set no-cache headers
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
       res.setHeader('Pragma', 'no-cache');

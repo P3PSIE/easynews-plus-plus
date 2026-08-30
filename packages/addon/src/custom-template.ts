@@ -1107,6 +1107,33 @@ function landingTemplate(manifest: Manifest): string {
       // Update links initially
       updateLink();
       
+      // Restore form values from URL path if reconfiguring (e.g. /:config/configure)
+      const pathSegments = window.location.pathname.split('/').filter(Boolean);
+      for (const segment of pathSegments) {
+        if (segment !== 'configure') {
+          try {
+            const parsedConfig = JSON.parse(decodeURIComponent(segment));
+            if (parsedConfig && typeof parsedConfig === 'object') {
+              logger.debug('Restoring config from URL path:', parsedConfig);
+              Object.entries(parsedConfig).forEach(([key, value]) => {
+                const field =
+                  document.getElementById(key) ||
+                  document.querySelector('input[name="' + key + '"]');
+                if (field) {
+                  if (field.type === 'checkbox') {
+                    field.checked = value === 'true' || value === true;
+                  } else {
+                    field.value = value;
+                  }
+                }
+              });
+              updateLink();
+              break;
+            }
+          } catch {}
+        }
+      }
+
       // Restore form values if returning from a language change
       const savedValues = localStorage.getItem('formValues');
       if (savedValues) {
@@ -1119,7 +1146,7 @@ function landingTemplate(manifest: Manifest): string {
             const field = document.getElementById(key) || document.querySelector('input[name="' + key + '"]');
             if (field) {
               if (field.type === 'checkbox') {
-                field.checked = value === 'true';
+                field.checked = value === 'true' || value === true;
               } else {
                 field.value = value;
               }

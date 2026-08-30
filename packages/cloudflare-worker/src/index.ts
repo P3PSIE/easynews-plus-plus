@@ -146,8 +146,8 @@ app.get('/resolve/:payload/:filename', async c => {
   }
 });
 
-// Add the configure route for direct access with language selection
-app.get('/configure', c => {
+// Configure page renderer
+const renderConfigure = (c: any) => {
   logger.debug(`Received configure request from: ${c.req.header('user-agent')}`);
 
   // Set no-cache headers
@@ -185,7 +185,11 @@ app.get('/configure', c => {
   const localizedHTML = customTemplate(tempManifest);
   logger.debug(`Generated localized HTML (${localizedHTML.length} bytes)`);
   return c.html(localizedHTML);
-});
+};
+
+// Add the configure routes for both fresh access and reconfiguring installed addon
+app.get('/configure', renderConfigure);
+app.get('/:config/configure', renderConfigure);
 
 // If we have a config, add a redirect from the root to configure
 if ((addonInterface.manifest.config || []).length > 0) {
