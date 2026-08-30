@@ -1162,9 +1162,10 @@ function mapStream({
   const bingeGroup = `easynews-plus-plus|${quality || 'default'}|${bingeLang}|${fileExtension || 'unknown'}`;
 
   const stream: Stream & { _sort?: SortMeta } = {
-    name: `Easynews++${qualityBadge ? `\n${qualityBadge}` : quality ? `\n${quality}` : ''}`,
+    name: `Easynews++${quality ? `\n${quality}` : ''}`,
     description: [
       `${title}${fileExtension}`,
+      ...(qualityBadge && qualityBadge !== quality ? [`🎬 ${qualityBadge}`] : []),
       `🕛 ${duration ?? 'unknown duration'}`,
       `📦 ${size ?? 'unknown size'} ${publishDate}`,
       languageInfo,
