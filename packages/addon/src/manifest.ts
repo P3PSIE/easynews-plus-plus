@@ -54,15 +54,17 @@ const qualityOptions = {
 } as Record<string, string>;
 
 export const manifest: Manifest = {
-  id: 'community.easynews-plus-plus',
+  id: process.env.ADDON_ID || 'community.easynews-plus-plus',
   version,
-  description,
+  description: process.env.ADDON_DESCRIPTION || description,
   catalogs: [],
   resources: [{ name: 'stream', types: ['movie', 'series'], idPrefixes: ['tt'] }],
   types: ['movie', 'series'],
-  name: 'Easynews++',
-  background: 'https://i.imgur.com/QPPXf5T.jpeg',
-  logo: 'https://pbs.twimg.com/profile_images/479627852757733376/8v9zH7Yo_400x400.jpeg',
+  name: process.env.ADDON_NAME || 'Easynews++',
+  background: process.env.ADDON_BACKGROUND || 'https://i.imgur.com/QPPXf5T.jpeg',
+  logo:
+    process.env.ADDON_LOGO ||
+    'https://pbs.twimg.com/profile_images/479627852757733376/8v9zH7Yo_400x400.jpeg',
   behaviorHints: { configurable: true, configurationRequired: true },
   stremioAddonsConfig: {
     issuer: 'https://stremio-addons.net',
@@ -121,6 +123,17 @@ export const manifest: Manifest = {
       key: 'maxFileSize',
       type: 'number',
       default: '0',
+    },
+    {
+      title: 'TMDB API Key (Optional)',
+      key: 'tmdbApiKey',
+      type: 'password',
+    },
+    {
+      title: 'Addon Name (Optional)',
+      key: 'addonName',
+      type: 'text',
+      default: 'Easynews++',
     },
   ],
 };

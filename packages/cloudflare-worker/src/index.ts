@@ -23,6 +23,34 @@ const stremioRouter = createRouter(addonInterface);
 const addonRouter = new Hono();
 addonRouter.all('*', async c => {
   const req = c.req.raw;
+  const url = new URL(req.url);
+
+  // If requesting a configured manifest.json, inject custom name/description/logo if set
+  if (
+    req.method === 'GET' &&
+    url.pathname.endsWith('/manifest.json') &&
+    url.pathname !== '/manifest.json'
+  ) {
+    const segments = url.pathname.split('/').filter(Boolean);
+    if (segments.length >= 2) {
+      try {
+        const configJson = JSON.parse(decodeURIComponent(segments[0]));
+        if (configJson.addonName || configJson.addonDesc || configJson.addonLogo) {
+          const res = await stremioRouter(req);
+          if (res && res.status === 200) {
+            const manifestData = (await res.json()) as any;
+            if (configJson.addonName) manifestData.name = configJson.addonName;
+            if (configJson.addonDesc) manifestData.description = configJson.addonDesc;
+            if (configJson.addonLogo) manifestData.logo = configJson.addonLogo;
+            return c.json(manifestData);
+          }
+        }
+      } catch {
+        // ignore parse error, proceed to standard router
+      }
+    }
+  }
+
   const res = await stremioRouter(req);
   if (!res) return c.notFound();
   return res;

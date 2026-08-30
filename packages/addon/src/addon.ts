@@ -27,6 +27,7 @@ import {
   createLimiter,
   SearchOptions,
   EasynewsSearchResponse,
+  FileData,
 } from 'easynews-plus-plus-api';
 import { publicMetaProvider } from './meta.js';
 import { Stream } from './types.js';
@@ -38,6 +39,8 @@ import { createLogger, parseIntEnv } from 'easynews-plus-plus-shared';
 interface AddonConfig {
   username: string;
   password: string;
+  tmdbApiKey?: string;
+  addonName?: string;
   strictTitleMatching?: string;
   preferredLanguage?: string;
   sortingPreference?: string;
@@ -200,6 +203,8 @@ builder.defineStreamHandler(
     const {
       username,
       password,
+      tmdbApiKey,
+      addonName,
       strictTitleMatching = DEFAULT_CONFIG.strictTitleMatching,
       preferredLanguage = DEFAULT_CONFIG.preferredLanguage,
       sortingPreference = DEFAULT_CONFIG.sortingPreference,
@@ -218,7 +223,7 @@ builder.defineStreamHandler(
 
     // Include settings in cache key to ensure
     // users with different settings get different cache results
-    const cacheKey = `${id}:v3:user=${username}:strict=${strictTitleMatching === 'on' || strictTitleMatching === 'true'}:lang=${preferredLanguage || ''}:sort=${sortingPreference}:qualities=${showQualities || ''}:maxPerQuality=${maxResultsPerQuality || ''}:maxSize=${maxFileSize || ''}`;
+    const cacheKey = `${id}:v4:user=${username}:strict=${strictTitleMatching === 'on' || strictTitleMatching === 'true'}:lang=${preferredLanguage || ''}:tmdb=${tmdbApiKey ? 'custom' : 'default'}:sort=${sortingPreference}:qualities=${showQualities || ''}:maxPerQuality=${maxResultsPerQuality || ''}:maxSize=${maxFileSize || ''}:name=${addonName || 'Easynews++'}`;
 
     // Redact the username when logging the cache key.
     logger.debug(`Cache key: ${cacheKey.replace(`user=${username}`, 'user=***')}`);
@@ -291,7 +296,7 @@ builder.defineStreamHandler(
       }
 
       // Use custom titles from custom-titles.json
-      const customTitles = { ...titlesFromFile };
+      const customTitles: Record<string, string[]> = { ...customTitlesJson };
 
       logger.debug(
         `Using ${Object.keys(customTitles).length} custom titles from custom-titles.json`
@@ -326,7 +331,7 @@ builder.defineStreamHandler(
         `API Sorting: ${sortOptions.sort1} (${sortOptions.sort1Direction}), ${sortOptions.sort2} (${sortOptions.sort2Direction}), ${sortOptions.sort3} (${sortOptions.sort3Direction})`
       );
 
-      const meta = await publicMetaProvider(id, type, preferredLanguage);
+      const meta = await publicMetaProvider(id, type, preferredLanguage, tmdbApiKey);
       logger.info(`Searching for: ${meta.name}`);
 
       // Check if we have a custom title for this title directly
@@ -833,23 +838,34 @@ builder.defineStreamHandler(
 
         // Filter streams by file size (only if maxFileSizeGB > 0)
         if (maxFileSizeGB > 0) {
+          logger.debug(`Filtering for max file size: ${maxFileSizeGB} GB`);
           const filteredStreams = streams.filter(stream => {
             const description = stream.description || '';
-            const sizeLine = description.split('\n').find(line => line.includes('📦'));
+            const sizeMatch = description.match(/📦\s+([\d\.]+)\s+(GB|MB|KB|B)/i);
 
-            if (!sizeLine) return true; // Keep if we can't determine size
+            if (sizeMatch && sizeMatch[1] && sizeMatch[2]) {
+              const size = parseFloat(sizeMatch[1]);
+              const unit = sizeMatch[2].toUpperCase();
+              let sizeInGB = 0;
 
-            // Extract only the size part (before any date information)
-            const sizePart = sizeLine.split('📅')[0].trim();
+              // Convert to GB for comparison
+              if (unit === 'GB') {
+                sizeInGB = size;
+              } else if (unit === 'MB') {
+                sizeInGB = size / 1024;
+              } else if (unit === 'KB') {
+                sizeInGB = size / (1024 * 1024);
+              } else if (unit === 'B') {
+                sizeInGB = size / (1024 * 1024 * 1024);
+              }
 
-            if (sizePart.includes('GB')) {
-              const sizeGB = parseFloat(sizePart.match(/[\d.]+/)?.[0] || '0');
-              return sizeGB <= maxFileSizeGB;
-            }
-
-            if (sizePart.includes('MB')) {
-              const sizeMB = parseFloat(sizePart.match(/[\d.]+/)?.[0] || '0');
-              return sizeMB / 1024 <= maxFileSizeGB;
+              const keepStream = sizeInGB <= maxFileSizeGB;
+              if (!keepStream) {
+                logger.debug(
+                  `Filtering out stream exceeding size limit: ${sizeInGB.toFixed(2)} GB > ${maxFileSizeGB} GB`
+                );
+              }
+              return keepStream;
             }
 
             return true; // Keep if we can't parse the size
@@ -903,22 +919,18 @@ builder.defineStreamHandler(
 
             if (limitedQualityStreams.length < qualityStreams.length) {
               logger.debug(
-                `Quality ${quality}: Limited from ${qualityStreams.length} to ${limitedQualityStreams.length} streams`
+                `Limited quality ${quality} from ${qualityStreams.length} to ${limitedQualityStreams.length} streams`
               );
             }
           });
 
-          if (limitedStreams.length > 0) {
-            streams = limitedStreams;
-            logger.debug(
-              `After applying max results per quality: ${streams.length} streams remain`
-            );
-          } else {
-            logger.warn(`Per-quality limiting would remove all streams - keeping original results`);
-          }
+          streams = limitedStreams;
+          logger.debug(`After limiting per quality: ${streams.length} streams remain`);
         }
 
-        logger.info(`Filtering complete: ${originalCount} streams → ${streams.length} streams`);
+        logger.info(
+          `Final stream count: ${streams.length} streams (filtered from ${originalCount} matches)`
+        );
       }
 
       if (streams.length > 0) {
@@ -1003,16 +1015,14 @@ builder.defineStreamHandler(
 // Per-stream sorting metadata, precomputed ONCE in mapStream so the sort
 // comparator never re-parses the human-readable name/description strings. These
 // fields reproduce exactly what the previous in-comparator parsing derived.
-type SortMeta = {
+interface SortMeta {
   qualityScore: number;
-  sizeUnit: 'GB' | 'MB' | '';
+  sizeUnit: string;
   sizeValue: number;
   dateMs: number;
   hasPreferredLang: boolean;
-};
+}
 
-// Quality label → score. Operates on the same label that goes into the stream
-// name (`Easynews++\n<quality>`), so it matches the old getQualityScore exactly.
 function qualityScoreFromLabel(quality: string | undefined): number {
   if (!quality) return 0;
   const q = quality.toUpperCase();
@@ -1030,19 +1040,16 @@ function qualityScoreFromLabel(quality: string | undefined): number {
   return 0;
 }
 
-// Parse the displayed size string (file['4'], e.g. "1.5 GB" / "700 MB") into a
-// unit + number, mirroring the old comparator's GB/MB detection and first-number
-// extraction.
-function parseSizeForSort(size: string | undefined): { unit: 'GB' | 'MB' | ''; value: number } {
-  const s = size ?? '';
-  if (s.includes('GB')) return { unit: 'GB', value: parseFloat(s.match(/[\d.]+/)?.[0] || '0') };
-  if (s.includes('MB')) return { unit: 'MB', value: parseFloat(s.match(/[\d.]+/)?.[0] || '0') };
-  return { unit: '', value: 0 };
+function parseSizeForSort(sizeStr: string): { unit: string; value: number } {
+  if (!sizeStr) return { unit: '', value: 0 };
+  const match = sizeStr.match(/([\d\.]+)\s*([a-zA-Z]+)/);
+  if (!match) return { unit: '', value: 0 };
+  return {
+    value: parseFloat(match[1]) || 0,
+    unit: match[2].toUpperCase(),
+  };
 }
 
-// Reproduces the original size comparison EXACTLY, including its quirk that any
-// GB file outranks any MB file regardless of the actual numbers; same-unit
-// compares by value descending; anything unparseable compares equal.
 function compareSizeMeta(a: SortMeta, b: SortMeta): number {
   if (a.sizeUnit === 'GB' && b.sizeUnit === 'GB') {
     return a.sizeValue > b.sizeValue ? -1 : a.sizeValue < b.sizeValue ? 1 : 0;
@@ -1056,25 +1063,27 @@ function compareSizeMeta(a: SortMeta, b: SortMeta): number {
 }
 
 function mapStream({
+  fullResolution,
+  fileExtension,
   duration,
   size,
-  fullResolution,
   title,
-  fileExtension,
-  videoSize,
   url,
+  videoSize,
   file,
   preferredLang,
+  addonName,
 }: {
+  fullResolution: string;
+  fileExtension: string;
+  duration: string;
+  size: string;
   title: string;
   url: string;
-  fileExtension: string;
-  videoSize: number | undefined;
-  duration: string | undefined;
-  size: string | undefined;
-  fullResolution: string | undefined;
-  file: any;
-  preferredLang: string;
+  videoSize?: number;
+  file: FileData;
+  preferredLang?: string;
+  addonName?: string;
 }): Stream {
   logger.debug(`Mapping stream: "${title}" (${fileExtension}, ${size}, ${duration})`);
 
@@ -1115,7 +1124,7 @@ function mapStream({
   // Precompute everything the sort comparator needs, once, so it never re-parses
   // the display strings below. Stripped off again before the response is cached
   // or returned (see the cleanup loop in the handler).
-  const parsedSize = parseSizeForSort(size);
+  const parsedSize = parseSizeForSort(size || '');
   const sortMeta: SortMeta = {
     qualityScore: qualityScoreFromLabel(quality),
     sizeUnit: parsedSize.unit,
@@ -1134,10 +1143,10 @@ function mapStream({
     Array.isArray(file.alangs) && file.alangs.length
       ? [...new Set(file.alangs.map((l: string) => String(l).toLowerCase()))].sort().join(',')
       : 'unknown';
-  const bingeGroup = `easynews-plus-plus|${quality || 'default'}|${bingeLang}|${fileExtension || 'unknown'}`;
+  const bingeGroup = `${addonName || 'easynews-plus-plus'}|${quality || 'default'}|${bingeLang}|${fileExtension || 'unknown'}`;
 
   const stream: Stream & { _sort?: SortMeta } = {
-    name: `Easynews++${quality ? `\n${quality}` : ''}`,
+    name: `${addonName || 'Easynews++'}${quality ? `\n${quality}` : ''}`,
     description: [
       `${title}${fileExtension}`,
       ...(qualityBadge && qualityBadge !== quality ? [`🎬 ${qualityBadge}`] : []),

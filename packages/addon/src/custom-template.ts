@@ -898,6 +898,18 @@ function landingTemplate(manifest: Manifest): string {
               <input type="${field.type}" placeholder="${translations.form.noLimit}" name="${field.key}" id="${field.key}" ${field.required ? 'required' : ''}>
             </div>`;
                 }
+              } else if (field.key === 'tmdbApiKey') {
+                return `
+            <div class="form-group">
+              <label for="${field.key}">${field.title} <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener noreferrer" style="color: #00d2ff; font-size: 0.8em; text-decoration: none; margin-left: 6px;">(Get free key ↗)</a></label>
+              <input type="password" placeholder="e.g. 1a2b3c4d5e6f..." name="${field.key}" id="${field.key}">
+            </div>`;
+              } else if (field.key === 'addonName') {
+                return `
+            <div class="form-group">
+              <label for="${field.key}">${field.title}</label>
+              <input type="text" placeholder="Easynews++" value="${field.default || 'Easynews++'}" name="${field.key}" id="${field.key}">
+            </div>`;
               } else if (field.type === 'password') {
                 return `
             <div class="form-group">

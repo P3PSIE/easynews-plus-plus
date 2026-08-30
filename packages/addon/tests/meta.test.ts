@@ -74,4 +74,50 @@ describe('publicMetaProvider — IMDb -> Cinemeta fallback & Caching', () => {
     expect(meta2.episode).toBe('2');
     expect(fetchMock.mock.calls.length).toBe(initialFetchCount);
   });
+
+  it('queries TMDB when user supplies a custom TMDB API key', async () => {
+    const fetchMock = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes('media-imdb.com/suggestion')) {
+        return {
+          ok: true,
+          json: async () => ({ d: [{ id: 'tt0000003', l: 'Money Heist', y: 2017 }] }),
+        } as unknown as Response;
+      }
+      if (u.includes('api.themoviedb.org/3/find')) {
+        return {
+          ok: true,
+          json: async () => ({
+            movie_results: [],
+            tv_results: [{ id: 71446 }],
+          }),
+        } as unknown as Response;
+      }
+      if (u.includes('api.themoviedb.org/3/tv/71446?')) {
+        return {
+          ok: true,
+          json: async () => ({
+            name: 'Haus des Geldes',
+            original_name: 'La Casa de Papel',
+          }),
+        } as unknown as Response;
+      }
+      if (u.includes('api.themoviedb.org/3/tv/71446/alternative_titles')) {
+        return {
+          ok: true,
+          json: async () => ({
+            results: [{ title: 'La casa de papel' }, { title: 'Money Heist' }],
+          }),
+        } as unknown as Response;
+      }
+      return { ok: false } as unknown as Response;
+    });
+
+    global.fetch = fetchMock as typeof fetch;
+
+    const meta = await publicMetaProvider('tt0000003:1:1', 'series', 'ger', 'test-custom-tmdb-key');
+    expect(meta.name).toBe('Money Heist');
+    expect(meta.alternativeNames).toContain('La Casa de Papel');
+    expect(meta.alternativeNames).toContain('Haus des Geldes');
+  });
 });
