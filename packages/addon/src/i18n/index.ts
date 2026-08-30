@@ -4,19 +4,7 @@
 
 // Define the supported languages
 type Language =
-  | 'en'
-  | 'de'
-  | 'es'
-  | 'fr'
-  | 'it'
-  | 'ja'
-  | 'pt'
-  | 'ru'
-  | 'ko'
-  | 'zh'
-  | 'nl'
-  | 'ro'
-  | 'bg';
+  'en' | 'de' | 'es' | 'fr' | 'it' | 'ja' | 'pt' | 'ru' | 'ko' | 'zh' | 'nl' | 'ro' | 'bg';
 
 // Key-value structure for translations
 type TranslationKeys = {

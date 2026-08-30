@@ -21,6 +21,6 @@
     "easynews-plus-plus-api": "file:../api",
     "easynews-plus-plus-shared": "file:../shared",
     "follow-redirects": "^1.16.0",
-    "parse-torrent-title": "^1.4.0"
+    "parse-torrent-title": "^3.0.1"
   }
 }
