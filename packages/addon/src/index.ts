@@ -10,3 +10,4 @@ export {
 } from './resolve.js';
 export { publicMetaProvider, clearMetaCache } from './meta.js';
 export { getUILanguage, sanitizeUiLanguage } from './i18n/index.js';
+export { clearSanitizeCache } from './utils.js';

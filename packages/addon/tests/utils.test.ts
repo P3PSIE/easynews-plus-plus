@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   matchesTitle,
   sanitizeTitle,
+  clearSanitizeCache,
   isBadVideo,
   isAdultGroup,
   isAnchoredQuery,
@@ -41,6 +42,18 @@ vi.mock('./utils.js', async () => {
 });
 
 describe('sanitizeTitle', () => {
+  beforeEach(() => {
+    clearSanitizeCache();
+  });
+
+  it('memoizes sanitized titles across calls', () => {
+    const raw = 'The Matrix (1999) 1080p';
+    const first = sanitizeTitle(raw);
+    const second = sanitizeTitle(raw);
+    expect(first).toBe('the matrix  1999  1080p');
+    expect(second).toBe(first);
+  });
+
   it.each([
     ['Three Colors: Blue (1993)', 'three colors blue  1993'],
     ['Willy Wonka & the Chocolate Factory (1973)', 'willy wonka and the chocolate factory  1973'],

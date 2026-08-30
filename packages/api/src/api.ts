@@ -382,12 +382,21 @@ export class EasynewsAPI {
     logger.debug(`Request URL: ${url.toString().substring(0, 100)}...`);
 
     try {
-      const res = await fetch(url, {
+      const fetchOptions: RequestInit = {
         headers: {
           Authorization: createBasic(this.username, this.password),
         },
         signal, // the caller's whole-search timeout (queue wait included)
-      });
+      };
+
+      if (isCloudflareWorkers()) {
+        (fetchOptions as any).cf = {
+          cacheTtl: 86400,
+          cacheEverything: true,
+        };
+      }
+
+      const res = await fetch(url, fetchOptions);
 
       if (res.status === 401) {
         // Do not log the username/credentials.

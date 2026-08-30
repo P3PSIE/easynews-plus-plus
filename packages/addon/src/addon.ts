@@ -418,6 +418,7 @@ builder.defineStreamHandler(
 
       // Early exit condition - limit API calls
       const TOTAL_MAX_RESULTS = parseIntEnv(process.env.TOTAL_MAX_RESULTS, 500);
+      const FAST_PATH_MIN_RESULTS = parseIntEnv(process.env.FAST_PATH_MIN_RESULTS, 15);
       let totalFoundResults = 0;
 
       // Running dedup of every file hash seen across all searches. Workers add
@@ -425,15 +426,10 @@ builder.defineStreamHandler(
       // is maintained incrementally instead of being recomputed per completion.
       const seenHashes = new Set<string>();
 
-      // Build the query lists: every title variant WITHOUT the year, then (if the
-      // year is known) every variant WITH the year. Kept as two phases so the
-      // no-year searches can satisfy TOTAL_MAX_RESULTS and skip the year phase
-      // entirely (the original early-exit behavior). Within each phase, queries
-      // are merged back in order so the downstream dedup-by-hash (first-seen wins)
-      // and the cap select the same results regardless of completion order.
-      const buildQueries = (withYear: boolean): string[] => {
+      // Build queries for a subset of titles
+      const buildQueriesFor = (titles: string[], withYear: boolean): string[] => {
         const out: string[] = [];
-        for (const titleVariant of allTitles) {
+        for (const titleVariant of titles) {
           if (!titleVariant.trim()) continue;
           out.push(
             buildSearchQuery(type, {
@@ -445,18 +441,29 @@ builder.defineStreamHandler(
         }
         return out;
       };
-      // De-duplicate to avoid spending rate-limited API calls on identical
-      // searches. The no-year phase is deduped case-insensitively; the year
-      // phase additionally drops anything already covered by the no-year phase.
-      // For series this empties the year phase entirely (buildSearchQuery ignores
-      // the year for series, so it produces the same strings) — which previously
-      // re-fired the no-year queries when they failed, adding load during
-      // throttling. Also collapses case variants like "loegnen"/"Loegnen".
-      const noYearQueries = dedupeIgnoreCase(buildQueries(false));
-      const noYearKeys = new Set(noYearQueries.map(q => q.toLowerCase()));
+
+      const primaryTitles = allTitles.slice(0, 1);
+      const altTitles = allTitles.slice(1);
+
+      // Primary title query without year
+      const primaryNoYearQueries = dedupeIgnoreCase(buildQueriesFor(primaryTitles, false));
+      const primaryNoYearKeys = new Set(primaryNoYearQueries.map(q => q.toLowerCase()));
+
+      // Alternative title queries without year (excluding anything already queried in primary)
+      const altNoYearQueries = dedupeIgnoreCase(buildQueriesFor(altTitles, false)).filter(
+        q => !primaryNoYearKeys.has(q.toLowerCase())
+      );
+      const allNoYearKeys = new Set([
+        ...primaryNoYearKeys,
+        ...altNoYearQueries.map(q => q.toLowerCase()),
+      ]);
+
+      // Year queries (only if year is known and not already covered)
       const yearQueries =
         meta.year !== undefined
-          ? dedupeIgnoreCase(buildQueries(true)).filter(q => !noYearKeys.has(q.toLowerCase()))
+          ? dedupeIgnoreCase(buildQueriesFor(allTitles, true)).filter(
+              q => !allNoYearKeys.has(q.toLowerCase())
+            )
           : [];
 
       // BOUNDED concurrency instead of one-at-a-time (the sequential fan-out
@@ -484,77 +491,75 @@ builder.defineStreamHandler(
       // empty-result TTL. See the empty-result branch below.
       let searchErrors = 0;
 
-      // Run one phase's queries through a sliding window of SEARCH_CONCURRENCY
-      // slots — the same createLimiter primitive the api layer uses for the
-      // account cap. FIFO admission in map order keeps dispatch order = query
-      // order, and a freed slot is refilled immediately, so one slow query
-      // never holds an idle slot hostage the way lock-step batches did.
-      // Results are merged into allSearchResults in QUERY order after the
-      // phase, so the downstream dedup-by-hash (first-seen wins) and the cap
-      // select the same results regardless of completion order. The early-exit
-      // threshold is re-checked as each task acquires a slot. Throws on an
-      // auth error so the outer handler surfaces the auth-error stream (a
-      // single auth failure means every search would fail).
-      const runSearchPhase = async (queries: string[]): Promise<void> => {
-        if (queries.length === 0) return; // e.g. the year phase for series
-
-        const phaseResults: (EasynewsSearchResponse | undefined)[] = new Array(queries.length);
-        let stop = false;
-        const limiter = createLimiter(SEARCH_CONCURRENCY);
-
-        try {
-          await Promise.all(
-            queries.map((query, i) =>
-              limiter.run(async () => {
-                if (stop || totalFoundResults >= TOTAL_MAX_RESULTS) {
-                  if (!stop) {
-                    logger.debug(
-                      `Already found ${totalFoundResults} unique results, skipping remaining searches`
-                    );
-                  }
-                  stop = true;
-                  return;
-                }
-
-                try {
-                  const res = await api.search({ ...sortOptions, query });
-                  phaseResults[i] = res;
-                  logger.debug(`Found ${res?.data?.length || 0} results for "${query}"`);
-                  for (const file of res?.data ?? []) {
-                    seenHashes.add(file['0']);
-                  }
-                  totalFoundResults = seenHashes.size;
-                  logger.debug(`Total unique results so far: ${totalFoundResults}`);
-                } catch (error) {
-                  if (isAuthError(error)) {
-                    stop = true;
-                    throw error;
-                  }
-                  searchErrors++;
-                  logger.error(`Error searching for "${query}":`, error);
-                }
-              })
-            )
-          );
-        } finally {
-          // Merge landed results in query order (deterministic downstream dedup).
-          for (let i = 0; i < queries.length; i++) {
-            const result = phaseResults[i];
-            if (result?.data?.length) {
-              allSearchResults.push({ query: queries[i], result });
-            }
-          }
-        }
-      };
+      const allSearchQueries = [...primaryNoYearQueries, ...altNoYearQueries, ...yearQueries];
 
       logger.debug(
-        `Running ${noYearQueries.length} no-year + ${yearQueries.length} year searches for ${allTitles.length} title variants`
+        `Running adaptive searches for ${allTitles.length} title variants (${allSearchQueries.length} total queries: ${primaryNoYearQueries.length} primary, ${altNoYearQueries.length} alt, ${yearQueries.length} year; threshold: ${FAST_PATH_MIN_RESULTS})`
       );
 
-      // No-year phase first; only run the year phase if still under the cap.
-      await runSearchPhase(noYearQueries);
-      if (totalFoundResults < TOTAL_MAX_RESULTS) {
-        await runSearchPhase(yearQueries);
+      // Run all queries through a sliding window of SEARCH_CONCURRENCY slots
+      // — the same createLimiter primitive the api layer uses for the account cap.
+      // FIFO admission in map order keeps dispatch order = query order, and a freed
+      // slot is refilled immediately. Primary queries run first; if they return >=
+      // FAST_PATH_MIN_RESULTS, subsequent alternative and year queries are skipped.
+      // Results are merged into allSearchResults in QUERY order after the search,
+      // so downstream dedup-by-hash is fully deterministic.
+      const phaseResults: (EasynewsSearchResponse | undefined)[] = new Array(
+        allSearchQueries.length
+      );
+      let stop = false;
+      const limiter = createLimiter(SEARCH_CONCURRENCY);
+
+      try {
+        await Promise.all(
+          allSearchQueries.map((query, i) =>
+            limiter.run(async () => {
+              if (
+                stop ||
+                (totalFoundResults >= FAST_PATH_MIN_RESULTS && i >= primaryNoYearQueries.length) ||
+                totalFoundResults >= TOTAL_MAX_RESULTS
+              ) {
+                if (
+                  !stop &&
+                  (totalFoundResults >= FAST_PATH_MIN_RESULTS ||
+                    totalFoundResults >= TOTAL_MAX_RESULTS)
+                ) {
+                  logger.debug(
+                    `Already found ${totalFoundResults} unique results, skipping remaining searches`
+                  );
+                }
+                stop = true;
+                return;
+              }
+
+              try {
+                const res = await api.search({ ...sortOptions, query });
+                phaseResults[i] = res;
+                logger.debug(`Found ${res?.data?.length || 0} results for "${query}"`);
+                for (const file of res?.data ?? []) {
+                  seenHashes.add(file['0']);
+                }
+                totalFoundResults = seenHashes.size;
+                logger.debug(`Total unique results so far: ${totalFoundResults}`);
+              } catch (error) {
+                if (isAuthError(error)) {
+                  stop = true;
+                  throw error;
+                }
+                searchErrors++;
+                logger.error(`Error searching for "${query}":`, error);
+              }
+            })
+          )
+        );
+      } finally {
+        // Merge landed results in query order (deterministic downstream dedup).
+        for (let i = 0; i < allSearchQueries.length; i++) {
+          const result = phaseResults[i];
+          if (result?.data?.length) {
+            allSearchResults.push({ query: allSearchQueries[i], result });
+          }
+        }
       }
 
       if (allSearchResults.length === 0) {

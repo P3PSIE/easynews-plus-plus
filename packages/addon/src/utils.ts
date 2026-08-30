@@ -132,12 +132,22 @@ export function isAnchoredQuery(query: string): boolean {
   return /s\d{1,3}e\d{1,3}/i.test(query) || /\b(?:19|20)\d{2}\b/.test(query);
 }
 
+const sanitizeCache = new Map<string, string>();
+const MAX_SANITIZE_CACHE = 4000;
+
+export function clearSanitizeCache(): void {
+  sanitizeCache.clear();
+}
+
 /**
  * Sanitize a title for case-insensitive comparison.
  * Handles special characters, accented letters, and common separators.
  */
-export function sanitizeTitle(title: string) {
-  // logger.debug(`Sanitizing title: "${title}"`);
+export function sanitizeTitle(title: string): string {
+  if (!title) return '';
+  const cached = sanitizeCache.get(title);
+  if (cached !== undefined) return cached;
+
   const result = title
     // replace common accented characters with their base characters
     .replace(/ä/g, 'ae')
@@ -147,11 +157,7 @@ export function sanitizeTitle(title: string) {
     .replace(/Ä/g, 'Ae')
     .replace(/Ö/g, 'Oe')
     .replace(/Ü/g, 'Ue')
-    // Scandinavian letters: normalize to the digraph convention so an "æ" title
-    // and its "ae" release spelling compare equal (e.g. Slangedræber ↔
-    // Slangedraeber). Release names also use the bare-vowel convention (ø→o,
-    // å→a); those alternate spellings are covered by getNordicTransliterations,
-    // which feeds them in as extra SEARCH variants.
+    // Scandinavian letters: normalize to the digraph convention
     .replace(/æ/g, 'ae')
     .replace(/ø/g, 'oe')
     .replace(/å/g, 'aa')
@@ -169,7 +175,12 @@ export function sanitizeTitle(title: string) {
     // to lowercase + remove spaces at the beginning and end
     .toLowerCase()
     .trim();
-  // logger.debug(`Sanitized result: "${result}"`);
+
+  if (sanitizeCache.size >= MAX_SANITIZE_CACHE) {
+    const first = sanitizeCache.keys().next().value;
+    if (first !== undefined) sanitizeCache.delete(first);
+  }
+  sanitizeCache.set(title, result);
   return result;
 }
 
@@ -206,6 +217,8 @@ export function getNordicTransliterations(title: string): string[] {
   return variants;
 }
 
+const wordRegexCache = new Map<string, RegExp>();
+
 /**
  * Whole-word membership test for non-strict matching: returns true only if
  * `word` appears as a complete word in `text` (so "killer" does NOT match
@@ -213,8 +226,17 @@ export function getNordicTransliterations(title: string): string[] {
  * (lowercased, space-separated, punctuation already collapsed).
  */
 function wordInText(word: string, text: string): boolean {
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escaped}\\b`).test(text);
+  let re = wordRegexCache.get(word);
+  if (!re) {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    re = new RegExp(`\\b${escaped}\\b`);
+    if (wordRegexCache.size >= 1000) {
+      const first = wordRegexCache.keys().next().value;
+      if (first !== undefined) wordRegexCache.delete(first);
+    }
+    wordRegexCache.set(word, re);
+  }
+  return re.test(text);
 }
 
 /**
