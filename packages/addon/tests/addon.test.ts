@@ -14,35 +14,43 @@ vi.mock('../src/manifest', () => ({
   },
 }));
 
-vi.mock('../src/utils', () => ({
-  buildSearchQuery: vi.fn().mockImplementation((type, meta) => {
-    return `${meta.name} ${meta.year || ''}`.trim();
-  }),
-  dedupeIgnoreCase: vi.fn().mockImplementation((queries: string[]) => {
-    const seen = new Set<string>();
-    return queries.filter(q => {
-      const k = q.toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-  }),
-  createStreamPath: vi.fn().mockReturnValue('path/to/stream'),
-  createStreamUrl: vi.fn().mockReturnValue('https://easynews.com/stream'),
-  getDuration: vi.fn().mockReturnValue('120m'),
-  getFileExtension: vi.fn().mockReturnValue('.mp4'),
-  getPostTitle: vi.fn().mockReturnValue('Test Movie Title'),
-  getQuality: vi.fn().mockReturnValue('1080p'),
-  getSize: vi.fn().mockReturnValue('1.5 GB'),
-  isBadVideo: vi.fn().mockReturnValue(false),
-  isAdultGroup: vi.fn().mockReturnValue(false),
-  isAnchoredQuery: vi.fn().mockReturnValue(true),
-  logError: vi.fn(),
-  matchesTitle: vi.fn().mockReturnValue(true),
-  getAlternativeTitles: vi.fn().mockReturnValue(['Alternative Title']),
-  getNordicTransliterations: vi.fn().mockReturnValue([]),
-  isAuthError: vi.fn().mockReturnValue(false),
-}));
+vi.mock('../src/utils', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/utils')>();
+  return {
+    ...actual,
+    buildSearchQuery: vi.fn().mockImplementation((type, meta) => {
+      return `${meta.name} ${meta.year || ''}`.trim();
+    }),
+    dedupeIgnoreCase: vi.fn().mockImplementation((queries: string[]) => {
+      const seen = new Set<string>();
+      return queries.filter(q => {
+        const k = q.toLowerCase();
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+    }),
+    createStreamPath: vi.fn().mockReturnValue('path/to/stream'),
+    createStreamUrl: vi.fn().mockReturnValue('https://easynews.com/stream'),
+    getDuration: vi.fn().mockReturnValue('120m'),
+    getFileExtension: vi.fn().mockReturnValue('.mp4'),
+    getPostTitle: vi.fn().mockReturnValue('Test Movie Title'),
+    getQuality: vi.fn().mockReturnValue('1080p'),
+    getStreamDetails: vi.fn().mockImplementation((title, fallback) => ({
+      quality: '1080p',
+      badge: '1080p',
+    })),
+    getSize: vi.fn().mockReturnValue('1.5 GB'),
+    isBadVideo: vi.fn().mockReturnValue(false),
+    isAdultGroup: vi.fn().mockReturnValue(false),
+    isAnchoredQuery: vi.fn().mockReturnValue(true),
+    logError: vi.fn(),
+    matchesTitle: vi.fn().mockReturnValue(true),
+    getAlternativeTitles: vi.fn().mockReturnValue(['Alternative Title']),
+    getNordicTransliterations: vi.fn().mockReturnValue([]),
+    isAuthError: vi.fn().mockReturnValue(false),
+  };
+});
 
 // Shared search mock so individual tests can make it resolve empty / reject.
 const { mockSearch } = vi.hoisted(() => ({ mockSearch: vi.fn() }));

@@ -343,6 +343,60 @@ function landingTemplate(manifest: Manifest): string {
       color: var(--muted-foreground);
     }
     
+    .password-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+    
+    .password-wrapper input {
+      padding-right: 44px;
+    }
+    
+    .password-toggle {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: transparent;
+      border: none;
+      box-shadow: none;
+      padding: 6px;
+      height: auto;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0.75;
+      transition: opacity 0.15s ease, color 0.15s ease;
+      z-index: 2;
+    }
+    
+    .password-toggle:hover {
+      background: transparent;
+      color: var(--foreground);
+      opacity: 1;
+      animation: none;
+      transform: translateY(-50%);
+      box-shadow: none;
+    }
+
+    .web-stremio-btn {
+      background-color: var(--secondary);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .web-stremio-btn:hover {
+      background-color: var(--accent);
+      border-color: var(--primary);
+    }
+
     /* Custom checkbox styles */
     .checkbox-wrapper {
       display: flex;
@@ -844,6 +898,24 @@ function landingTemplate(manifest: Manifest): string {
               <input type="${field.type}" placeholder="${translations.form.noLimit}" name="${field.key}" id="${field.key}" ${field.required ? 'required' : ''}>
             </div>`;
                 }
+              } else if (field.type === 'password') {
+                return `
+            <div class="form-group">
+              <label for="${field.key}">${field.title}${field.hint ? `<span class="form-hint">(${field.hint})</span>` : ''}</label>
+              <div class="password-wrapper">
+                <input type="password" name="${field.key}" id="${field.key}" ${field.required ? 'required' : ''}>
+                <button type="button" class="password-toggle" id="passwordToggle" aria-label="Toggle password visibility" title="Show/Hide Password">
+                  <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                  </svg>
+                  <svg class="eye-off-icon" style="display:none;" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                    <line x1="1" y1="1" x2="23" y2="23"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>`;
               } else {
                 return `
             <div class="form-group">
@@ -860,6 +932,9 @@ function landingTemplate(manifest: Manifest): string {
             <button type="button" id="copyButton" class="copy-button" href="#">${translations.configPage.copyConfig}</button>
             <div id="tooltip" class="tooltip">${translations.configPage.configCopied}</div>
           </div>
+          <a id="webInstallLink" href="#" target="_blank" rel="noopener noreferrer">
+            <button type="button" class="web-stremio-btn">Web Stremio</button>
+          </a>
           <a id="installLink" href="#">
             <button type="button">${translations.configPage.addToStremio}</button>
           </a>
@@ -868,7 +943,7 @@ function landingTemplate(manifest: Manifest): string {
     </div>
     
     <div class="social-links">
-      <a href="https://github.com/Varming73/easynews-plus-plus" target="_blank" rel="noopener noreferrer" class="social-link">
+      <a href="https://github.com/P3PSIE/easynews-plus-plus" target="_blank" rel="noopener noreferrer" class="social-link">
         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
         </svg>
@@ -905,8 +980,25 @@ function landingTemplate(manifest: Manifest): string {
     
     const configForm = document.getElementById('configForm');
     const installLink = document.getElementById('installLink');
+    const webInstallLink = document.getElementById('webInstallLink');
     const copyButton = document.getElementById('copyButton');
     const tooltip = document.getElementById('tooltip');
+    const passwordToggle = document.getElementById('passwordToggle');
+    const passwordInput = document.getElementById('password');
+
+    // Password visibility toggle
+    if (passwordToggle && passwordInput) {
+      passwordToggle.addEventListener('click', function() {
+        const isPassword = passwordInput.type === 'password';
+        passwordInput.type = isPassword ? 'text' : 'password';
+        const eyeIcon = passwordToggle.querySelector('.eye-icon');
+        const eyeOffIcon = passwordToggle.querySelector('.eye-off-icon');
+        if (eyeIcon && eyeOffIcon) {
+          eyeIcon.style.display = isPassword ? 'none' : 'block';
+          eyeOffIcon.style.display = isPassword ? 'block' : 'none';
+        }
+      });
+    }
     
     function updateLink() {
       const formData = new FormData(configForm);
@@ -924,11 +1016,18 @@ function landingTemplate(manifest: Manifest): string {
       });
 
       // Include the origin the user loaded this page from
-      config.baseUrl = window.location.origin
+      config.baseUrl = window.location.origin;
       
-      // Create the stremio:// URL
-      installLink.href = 'stremio://' + window.location.host + '/' + encodeURIComponent(JSON.stringify(config)) + '/manifest.json';
-      copyButton.href = 'https://' + window.location.host + '/' + encodeURIComponent(JSON.stringify(config)) + '/manifest.json';
+      const configStr = encodeURIComponent(JSON.stringify(config));
+      const manifestPath = '/' + configStr + '/manifest.json';
+      const httpsManifestUrl = window.location.origin + manifestPath;
+
+      // Create the stremio://, https:// and Web Stremio URLs
+      installLink.href = 'stremio://' + window.location.host + manifestPath;
+      copyButton.href = httpsManifestUrl;
+      if (webInstallLink) {
+        webInstallLink.href = 'https://web.stremio.com/#/addons?addon=' + encodeURIComponent(httpsManifestUrl);
+      }
     }
     
     // Extract the language change handler to a named function
@@ -1027,22 +1126,39 @@ function landingTemplate(manifest: Manifest): string {
         e.preventDefault();
       }
     });
+
+    if (webInstallLink) {
+      webInstallLink.addEventListener('click', function(e) {
+        if (!configForm.reportValidity()) {
+          e.preventDefault();
+        }
+      });
+    }
     
-    // Copy Link Button functionality
-    copyButton.addEventListener('click', function() {
+    // Copy Link Button functionality with modern clipboard API and fallback
+    copyButton.addEventListener('click', async function() {
       updateLink(); // Ensure the link is up to date
+      const urlToCopy = copyButton.href;
       
-      // Create a temporary input element to copy from
-      const tempInput = document.createElement('input');
-      tempInput.value = copyButton.href;
-      document.body.appendChild(tempInput);
-      
-      // Select and copy the text
-      tempInput.select();
-      document.execCommand('copy');
-      
-      // Remove the temporary element
-      document.body.removeChild(tempInput);
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(urlToCopy);
+        } else {
+          const tempInput = document.createElement('input');
+          tempInput.value = urlToCopy;
+          document.body.appendChild(tempInput);
+          tempInput.select();
+          document.execCommand('copy');
+          document.body.removeChild(tempInput);
+        }
+      } catch (err) {
+        const tempInput = document.createElement('input');
+        tempInput.value = urlToCopy;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
+      }
       
       // Show tooltip
       tooltip.style.opacity = '1';

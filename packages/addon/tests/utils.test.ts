@@ -6,6 +6,7 @@ import {
   isAdultGroup,
   isAnchoredQuery,
   getQuality,
+  getStreamDetails,
   extractDigits,
   capitalizeFirstLetter,
   createStreamUrl,
@@ -651,5 +652,47 @@ describe('buildSearchQuery', () => {
 
     const query = buildSearchQuery('series' as ContentType, meta as any);
     expect(query).toBe('Friends');
+  });
+});
+
+describe('getStreamDetails', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('extracts HDR, DV, Remux, Codec and Audio channels into clean badges', () => {
+    (parseTorrentTitle.parse as any).mockReturnValue({
+      resolution: '2160p',
+      codec: 'x265',
+      colorlist: ['DV', 'HDR'],
+      audiolist: ['atmos', 'truehd'],
+      channels: 7.1,
+    });
+
+    const details = getStreamDetails(
+      'Dune.Part.Two.2024.2160p.UHD.Remux.HEVC.DV.HDR.TrueHD.Atmos.7.1-FLUX'
+    );
+    expect(details.quality).toBe('4K');
+    expect(details.hdr).toBe('DV HDR');
+    expect(details.source).toBe('Remux');
+    expect(details.codec).toBe('HEVC');
+    expect(details.badge).toContain('4K DV HDR');
+    expect(details.badge).toContain('Remux');
+    expect(details.badge).toContain('HEVC');
+    expect(details.badge).toContain('Atmos');
+  });
+
+  it('handles standard 1080p SDR release smoothly', () => {
+    (parseTorrentTitle.parse as any).mockReturnValue({
+      resolution: '1080p',
+      codec: 'x264',
+      channels: 5.1,
+    });
+
+    const details = getStreamDetails('Oppenheimer.2023.1080p.BluRay.x264.DTS-HD.MA.5.1-CMRG');
+    expect(details.quality).toBe('1080p');
+    expect(details.badge).toContain('1080p');
+    expect(details.badge).toContain('AVC');
+    expect(details.badge).toContain('5.1');
   });
 });

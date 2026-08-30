@@ -602,6 +602,118 @@ export function getQuality(title: string, fallbackResolution?: string): string |
   return undefined;
 }
 
+export interface StreamDetails {
+  quality: string;
+  hdr?: string;
+  codec?: string;
+  audio?: string;
+  source?: string;
+  badge: string;
+}
+
+/**
+ * Extract rich media details (HDR, Codec, Audio Channels, Source) for display badges
+ */
+export function getStreamDetails(title: string, fallbackResolution?: string): StreamDetails {
+  const quality = getQuality(title, fallbackResolution) || '';
+  const parsed = parseTorrentTitle(title);
+  const upper = title.toUpperCase();
+
+  // Extract HDR tags (DV, HDR10+, HDR10, HDR)
+  const hdrTags: string[] = [];
+  if (/\b(DV|DOLBY[- .]?VISION)\b/i.test(upper) || (parsed as any).colorlist?.includes('DV')) {
+    hdrTags.push('DV');
+  }
+  if (/\bHDR10\+/i.test(upper)) {
+    hdrTags.push('HDR10+');
+  } else if (/\bHDR10\b/i.test(upper)) {
+    hdrTags.push('HDR10');
+  } else if (
+    /\bHDR\b/i.test(upper) ||
+    (parsed as any).colorlist?.includes('HDR') ||
+    (parsed as any).color === 'HDR'
+  ) {
+    hdrTags.push('HDR');
+  }
+  const hdr = hdrTags.length ? hdrTags.join(' ') : undefined;
+
+  // Extract Video Codec (HEVC, AV1, AVC)
+  let codec: string | undefined;
+  if (
+    /\b(HEVC|H\.?265|x265)\b/i.test(upper) ||
+    parsed.codec === 'x265' ||
+    parsed.codec === 'hevc'
+  ) {
+    codec = 'HEVC';
+  } else if (/\bAV1\b/i.test(upper) || parsed.codec === 'av1') {
+    codec = 'AV1';
+  } else if (
+    /\b(AVC|H\.?264|x264)\b/i.test(upper) ||
+    parsed.codec === 'x264' ||
+    parsed.codec === 'h264'
+  ) {
+    codec = 'AVC';
+  }
+
+  // Extract Source (Remux)
+  let source: string | undefined;
+  if (/\bREMUX\b/i.test(upper)) {
+    source = 'Remux';
+  }
+
+  // Extract Audio Channels & Encodings (Atmos, TrueHD, DTS-HD, DTS, DD+, 5.1, 7.1)
+  const audioTags: string[] = [];
+  if (/\bATMOS\b/i.test(upper) || (parsed as any).audiolist?.includes('atmos')) {
+    audioTags.push('Atmos');
+  }
+  if (/\b(TRUEHD|DTS-HD|DTS-MA)\b/i.test(upper)) {
+    if (/\bTRUEHD\b/i.test(upper)) audioTags.push('TrueHD');
+    else audioTags.push('DTS-HD');
+  } else if (/\bDTS\b/i.test(upper)) {
+    audioTags.push('DTS');
+  } else if (/\b(DDP|E-?AC-?3)\b/i.test(upper)) {
+    audioTags.push('DD+');
+  }
+
+  if (/\b7\.1\b/.test(upper) || parsed.channels === 7.1) {
+    audioTags.push('7.1');
+  } else if (/\b5\.1\b/.test(upper) || parsed.channels === 5.1) {
+    audioTags.push('5.1');
+  }
+  const audio = audioTags.length ? audioTags.join(' ') : undefined;
+
+  // Build clean badge string
+  const parts: string[] = [];
+  if (quality) {
+    parts.push(hdr ? `${quality} ${hdr}` : quality);
+  } else if (hdr) {
+    parts.push(hdr);
+  }
+
+  if (source) {
+    parts.push(source);
+  }
+
+  if (codec) {
+    parts.push(codec);
+  }
+
+  if (audio) {
+    parts.push(audio);
+  }
+
+  const badge = parts.join(' • ');
+
+  return {
+    quality,
+    hdr,
+    codec,
+    audio,
+    source,
+    badge: badge || quality || '',
+  };
+}
+
 export function createThumbnailUrl(res: EasynewsSearchResponse, file: FileData) {
   const id = file['0'];
   const idChars = id.slice(0, 3);

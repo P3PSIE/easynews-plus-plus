@@ -10,6 +10,7 @@ import {
   getFileExtension,
   getPostTitle,
   getQuality,
+  getStreamDetails,
   getSize,
   isBadVideo,
   isAdultGroup,
@@ -1097,7 +1098,9 @@ function mapStream({
 }): Stream {
   logger.debug(`Mapping stream: "${title}" (${fileExtension}, ${size}, ${duration})`);
 
-  const quality = getQuality(title, fullResolution);
+  const streamDetails = getStreamDetails(title, fullResolution);
+  const quality = streamDetails.quality;
+  const qualityBadge = streamDetails.badge;
 
   // Log language information for debugging
   if (file.alangs && file.alangs.length > 0) {
@@ -1154,7 +1157,7 @@ function mapStream({
   const bingeGroup = `easynews-plus-plus|${quality || 'default'}|${bingeLang}|${fileExtension || 'unknown'}`;
 
   const stream: Stream & { _sort?: SortMeta } = {
-    name: `Easynews++${quality ? `\n${quality}` : ''}`,
+    name: `Easynews++${qualityBadge ? `\n${qualityBadge}` : quality ? `\n${quality}` : ''}`,
     description: [
       `${title}${fileExtension}`,
       `🕛 ${duration ?? 'unknown duration'}`,
