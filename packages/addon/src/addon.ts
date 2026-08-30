@@ -643,8 +643,9 @@ builder.defineStreamHandler(
 
           processedHashes.add(fileHash);
 
-          // For series there are multiple possible queries that could match the title.
-          // We check if at least one of them matches.
+          // Check title matching based on content type
+          let matchesTitleQuery = false;
+
           if (type === 'series') {
             // Create queries for all title variants
             const queries: string[] = [];
@@ -669,32 +670,27 @@ builder.defineStreamHandler(
             // Honor the user's strict setting, but force strict on UNANCHORED
             // queries (no SxxExx / no year): a bare generic-English title floods
             // with porn that substring-matches under loose. See isAnchoredQuery.
-            if (
-              !queries.some(q => matchesTitle(title, q, useStrictMatching || !isAnchoredQuery(q)))
-            ) {
-              logger.debug(`Rejected series by title matching: "${title}"`);
-              rejectedTitle++;
-              continue;
-            }
+            matchesTitleQuery = queries.some(q =>
+              matchesTitle(title, q, useStrictMatching || !isAnchoredQuery(q))
+            );
+          } else {
+            // For movies and other content, check if title matches any of the query variants
+            matchesTitleQuery = allTitles.some(titleVariant => {
+              const variantQuery = buildSearchQuery(type, {
+                ...meta,
+                name: titleVariant,
+              });
+              // Honor the user's strict setting, but force strict on unanchored
+              // queries (no year here) for the same anti-flood reason as series.
+              return matchesTitle(
+                title,
+                variantQuery,
+                useStrictMatching || !isAnchoredQuery(variantQuery)
+              );
+            });
           }
 
-          // For movies, check if title matches any of the query variants
-          // Other content types are loosely matched
-          const matchesAnyVariant = allTitles.some(titleVariant => {
-            const variantQuery = buildSearchQuery(type, {
-              ...meta,
-              name: titleVariant,
-            });
-            // Honor the user's strict setting, but force strict on unanchored
-            // queries (no year here) for the same anti-flood reason as series.
-            return matchesTitle(
-              title,
-              variantQuery,
-              useStrictMatching || !isAnchoredQuery(variantQuery)
-            );
-          });
-
-          if (!matchesAnyVariant) {
+          if (!matchesTitleQuery) {
             logger.debug(`Rejected ${type} by title matching: "${title}"`);
             rejectedTitle++;
             continue;

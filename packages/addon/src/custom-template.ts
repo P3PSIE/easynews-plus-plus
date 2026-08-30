@@ -1062,14 +1062,20 @@ function landingTemplate(manifest: Manifest): string {
       window.location.href = newUrl;
     }
     
-    // Update when form changes
+    // Update when form changes or inputs are typed
     configForm.addEventListener('change', function(event) {
       // Only update links when the language isn't changing
       if (event.target.id !== 'uiLanguage') {
         updateLink();
       }
     });
-    
+
+    configForm.addEventListener('input', function(event) {
+      if (event.target.id !== 'uiLanguage') {
+        updateLink();
+      }
+    });
+
     // Initialize on load
     document.addEventListener('DOMContentLoaded', function() {
       // Log the current URL and form values for debugging
@@ -1122,6 +1128,7 @@ function landingTemplate(manifest: Manifest): string {
     
     // "Save Configuration" Button functionality
     installLink.addEventListener('click', function(e) {
+      updateLink();
       if (!configForm.reportValidity()) {
         e.preventDefault();
       }
@@ -1129,6 +1136,7 @@ function landingTemplate(manifest: Manifest): string {
 
     if (webInstallLink) {
       webInstallLink.addEventListener('click', function(e) {
+        updateLink();
         if (!configForm.reportValidity()) {
           e.preventDefault();
         }
